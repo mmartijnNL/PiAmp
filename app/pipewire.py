@@ -131,6 +131,35 @@ class PipeWireAdapter:
 
         return resolved
 
+    def validate_configured_devices(self) -> dict[str, Any]:
+        if self.config is None:
+            return {"ok": True, "missing_devices": []}
+
+        live = self.discover_devices()
+        live_lookup = {
+            self._normalize_device_name(name): name
+            for name in [*live.get("output_devices", []), live.get("source_device", "")]
+            if name
+        }
+
+        missing: list[str] = []
+
+        for input_def in self.config.inputs:
+            source_cfg = input_def.source if isinstance(input_def.source, dict) else {"device": input_def.source}
+            device_name = str(source_cfg.get("device", input_def.source or "unknown-source"))
+            if self._normalize_device_name(device_name) not in live_lookup:
+                missing.append(device_name)
+
+        for zone in self.config.zones:
+            device_name = str(getattr(zone, "device", "default"))
+            if self._normalize_device_name(device_name) not in live_lookup:
+                missing.append(device_name)
+
+        return {
+            "ok": not missing,
+            "missing_devices": sorted(set(missing)),
+        }
+
     def route_plan(self, route_state: dict[str, dict[str, float]]) -> dict[str, Any]:
         devices = self.discover_devices()
         return {

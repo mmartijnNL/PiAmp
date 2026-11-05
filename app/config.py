@@ -26,7 +26,6 @@ def load_config(path: str | Path) -> SystemConfig:
         raise FileNotFoundError(f"config file not found: {config_path}")
 
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    config_name = raw.get("name", "piamp")
 
     input_defs = raw.get("inputs", [])
     zone_defs = raw.get("zones", [])
@@ -57,7 +56,6 @@ def load_config(path: str | Path) -> SystemConfig:
     )
 
     return SystemConfig(
-        name=config_name,
         inputs=parsed_inputs,
         zones=parsed_zones,
         routes=(),

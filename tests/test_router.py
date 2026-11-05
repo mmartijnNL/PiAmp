@@ -1,3 +1,5 @@
+import json
+
 from app.pipewire import PipeWireAdapter
 from app.router import RouteManager
 
@@ -63,6 +65,34 @@ def test_pipewire_adapter_resolves_configured_input_and_zone_devices():
     assert resolved["Bureau Martijn"]["device"] == "UMC1820 Multichannel"
 
 
+def test_pipewire_adapter_reports_missing_configured_devices():
+    config = type("Cfg", (), {
+        "inputs": [
+            type("Input", (), {"name": "Pi", "source": {"device": "Monitor of Built-in Audio", "channels": [0, 1]}})(),
+        ],
+        "zones": [
+            type("Zone", (), {"name": "Bureau Martijn", "device": "UMC1820 Multichannel", "channels": [0, 1]})(),
+        ],
+    })()
+
+    def fake_runner(command):
+        if command[:3] == ["wpctl", "list", "audio"]:
+            return '''
+                Sinks:
+                    * 57. HDMI Audio
+                Sources:
+                    * 91. Internal Mic
+            '''
+        return ""
+
+    adapter = PipeWireAdapter(config=config, runner=fake_runner)
+    result = adapter.validate_configured_devices()
+
+    assert result["ok"] is False
+    assert "Monitor of Built-in Audio" in result["missing_devices"]
+    assert "UMC1820 Multichannel" in result["missing_devices"]
+
+
 def test_route_manager_routes_input_to_zones_and_mixes():
     manager = RouteManager()
     manager.add_input("tv", ["L", "R"])
@@ -88,6 +118,24 @@ def test_route_manager_group_command_expands_all_zones():
 
     assert manager.state["lounge"]["tv"] == 2.5
     assert manager.state["bedroom"]["tv"] == 2.5
+
+
+def test_route_manager_filters_persisted_state_to_configured_zones(tmp_path):
+    state_path = tmp_path / "routes.json"
+    state_path.write_text(json.dumps({
+        "bedroom": {"tv": 2.5},
+        "Bureau Martijn": {"Pi": 0.0},
+    }), encoding="utf-8")
+
+    config = type("Cfg", (), {
+        "inputs": [type("Input", (), {"name": "Pi", "channels": [0, 1]})()],
+        "zones": [type("Zone", (), {"name": "Bureau Martijn", "device": "UMC1820 Multichannel", "channels": [0, 1]})()],
+    })()
+
+    manager = RouteManager(config=config, state_path=state_path)
+
+    assert set(manager.state.keys()) == {"Bureau Martijn"}
+    assert "bedroom" not in manager.state
 
 
 def test_route_manager_persists_runtime_state(tmp_path):

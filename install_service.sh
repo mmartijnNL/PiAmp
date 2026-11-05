@@ -29,7 +29,7 @@ Wants=network.target sound.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/piamp
-ExecStart=/usr/bin/python3 /opt/piamp/app/main.py --config /opt/piamp/config.yaml --state /opt/piamp/state/routes.json
+ExecStart=/usr/bin/python3 -m app.main --config /opt/piamp/config.yaml --state /opt/piamp/state/routes.json
 Restart=on-failure
 RestartSec=5
 User=root

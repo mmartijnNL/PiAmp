@@ -1,0 +1,31 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CMD="cd \"$SCRIPT_DIR\" && /usr/bin/python3 -m app.main --config config.yaml --state state/routes.json"
+
+TERMINAL=""
+for candidate in x-terminal-emulator gnome-terminal konsole xfce4-terminal mate-terminal lxterminal terminator uxterm xterm; do
+  if command -v "$candidate" >/dev/null 2>&1; then
+    TERMINAL="$candidate"
+    break
+  fi
+done
+
+if [[ -n "$TERMINAL" ]]; then
+  echo "Opening PiAmp in a visible terminal..."
+  case "$TERMINAL" in
+    gnome-terminal)
+      exec "$TERMINAL" -- bash -lc "$CMD"
+      ;;
+    konsole)
+      exec "$TERMINAL" --noclose -e bash -lc "$CMD"
+      ;;
+    *)
+      exec "$TERMINAL" -e bash -lc "$CMD"
+      ;;
+  esac
+fi
+
+echo "No graphical terminal emulator was found; starting in the current terminal instead."
+exec bash -lc "$CMD"

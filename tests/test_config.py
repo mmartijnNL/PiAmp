@@ -6,7 +6,6 @@ from app.config import load_config
 def test_load_config_builds_input_and_zone_models():
     config = load_config("config.yaml")
 
-    assert config.name == "piamp"
     assert [i.name for i in config.inputs] == ["Pi", "Test Input"]
     assert [z.name for z in config.zones] == ["Bureau Martijn"]
     assert config.routes == ()

@@ -22,8 +22,23 @@ class RouteManager:
                 self.add_zone(zone_def.name, zone_def.device, list(zone_def.channels))
 
         self.state = self.state_store.load()
-        for zone_name in self._zones:
-            self.state.setdefault(zone_name, {})
+        if config is not None:
+            filtered_state: dict[str, dict[str, float]] = {}
+
+            for zone_name, route_map in self.state.items():
+                if zone_name not in self._zones:
+                    continue
+                filtered_state[zone_name] = {
+                    input_name: float(gain)
+                    for input_name, gain in route_map.items()
+                    if input_name in self._inputs
+                }
+
+            self.state = filtered_state
+            for zone_name in self._zones:
+                self.state.setdefault(zone_name, {})
+
+            self.save_state()
 
     def add_input(self, name: str, channels: list[str] | None = None) -> None:
         self._inputs[name] = list(channels or [])

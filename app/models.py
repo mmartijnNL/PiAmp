@@ -25,7 +25,6 @@ class RouteDefinition:
 
 @dataclass(frozen=True)
 class SystemConfig:
-    name: str
     inputs: Tuple[InputDefinition, ...] = field(default_factory=tuple)
     zones: Tuple[ZoneDefinition, ...] = field(default_factory=tuple)
     routes: Tuple[RouteDefinition, ...] = field(default_factory=tuple)

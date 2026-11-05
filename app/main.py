@@ -10,7 +10,7 @@ from .router import RouteManager
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="PiAmp audio routing service")
-    parser.add_argument("--config", default="config/example.yaml", help="Path to YAML config")
+    parser.add_argument("--config", default="config.yaml", help="Path to YAML config")
     parser.add_argument("--state", default="state/routes.json", help="Path to persisted route state")
     return parser
 

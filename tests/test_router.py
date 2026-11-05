@@ -1,4 +1,37 @@
+from app.pipewire import PipeWireAdapter
 from app.router import RouteManager
+
+
+def test_pipewire_adapter_discovers_source_and_output_nodes():
+    def fake_runner(command):
+        if command[:3] == ["pw-cli", "ls", "Node"]:
+            return '''
+                id 91, type PipeWire:Interface:Node/3
+                node.name = "alsa_input.usb-BEHRINGER_UMC1820_7A122C9D-00.multichannel-input"
+                media.class = "Audio/Source"
+                id 57, type PipeWire:Interface:Node/3
+                node.name = "alsa_output.usb-BEHRINGER_UMC1820_7A122C9D-00.analog-stereo"
+                media.class = "Audio/Sink"
+                id 58, type PipeWire:Interface:Node/3
+                node.name = "alsa_output.pci-0000_01_00.1.hdmi-stereo"
+                media.class = "Audio/Sink"
+            '''
+        if command[:3] == ["wpctl", "list", "audio"]:
+            return '''
+                Sinks:
+                    * 57. Built-in Audio Stereo
+                    58. HDMI Audio
+                Sources:
+                    * 91. UMC1820 Multichannel
+            '''
+        raise AssertionError(f"Unexpected command: {command}")
+
+    adapter = PipeWireAdapter(runner=fake_runner)
+    devices = adapter.discover_devices()
+
+    assert devices["source_device"] == "UMC1820 Multichannel"
+    assert "Built-in Audio Stereo" in devices["output_devices"]
+    assert "HDMI Audio" in devices["output_devices"]
 
 
 def test_route_manager_routes_input_to_zones_and_mixes():

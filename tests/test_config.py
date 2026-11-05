@@ -1,8 +1,10 @@
+import pytest
+
 from app.config import load_config
 
 
 def test_load_config_builds_input_and_zone_models():
-    config = load_config("config/example.yaml")
+    config = load_config("config.yaml")
 
     assert config.name == "piamp"
     assert [i.name for i in config.inputs] == ["tv", "music", "aux"]
@@ -14,10 +16,27 @@ def test_load_config_builds_input_and_zone_models():
     assert zone.output_device == "default"
 
 
-def test_load_config_rejects_duplicate_names():
-    try:
-        load_config("config/invalid_duplicate.yaml")
-    except ValueError as exc:
-        assert "duplicate" in str(exc).lower()
-    else:
-        raise AssertionError("Expected ValueError for duplicate names")
+def test_load_config_rejects_duplicate_names(tmp_path):
+    invalid_path = tmp_path / "invalid_duplicate.yaml"
+    invalid_path.write_text(
+        """
+name: piamp
+
+inputs:
+  - name: tv
+    source: pipewire
+    channels: ["L", "R"]
+  - name: tv
+    source: pipewire
+    channels: ["L", "R"]
+
+zones:
+  - name: living_room
+    output_device: default
+    output_channels: ["L", "R"]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="duplicate"):
+        load_config(invalid_path)

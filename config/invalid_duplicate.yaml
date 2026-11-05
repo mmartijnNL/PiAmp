@@ -1,0 +1,14 @@
+name: piamp
+
+inputs:
+  - name: tv
+    source: pipewire
+    channels: ["L", "R"]
+  - name: tv
+    source: pipewire
+    channels: ["L", "R"]
+
+zones:
+  - name: living_room
+    output_device: default
+    output_channels: ["L", "R"]

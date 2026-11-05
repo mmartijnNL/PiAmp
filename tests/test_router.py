@@ -112,26 +112,37 @@ def test_pipewire_adapter_applies_routes_to_live_nodes():
 
     commands = []
 
+    pw_dump_fixture = json.dumps([
+        {
+            "id": 91, "type": "PipeWire:Interface:Node",
+            "info": {"props": {"node.description": "Monitor of Built-in Audio", "media.class": "Audio/Source"}},
+        },
+        {
+            "id": 57, "type": "PipeWire:Interface:Node",
+            "info": {"props": {"node.description": "UMC1820 Multichannel", "media.class": "Audio/Sink"}},
+        },
+        {
+            "id": 200, "type": "PipeWire:Interface:Port",
+            "info": {"props": {"node.id": 91, "port.direction": "out", "port.id": 0}},
+        },
+        {
+            "id": 201, "type": "PipeWire:Interface:Port",
+            "info": {"props": {"node.id": 91, "port.direction": "out", "port.id": 1}},
+        },
+        {
+            "id": 300, "type": "PipeWire:Interface:Port",
+            "info": {"props": {"node.id": 57, "port.direction": "in", "port.id": 0}},
+        },
+        {
+            "id": 301, "type": "PipeWire:Interface:Port",
+            "info": {"props": {"node.id": 57, "port.direction": "in", "port.id": 1}},
+        },
+    ])
+
     def fake_runner(command):
         commands.append(command)
-        if command == ["wpctl", "status"]:
-            return textwrap.dedent('''\
-                Audio
-                 ├─ Sinks:
-                 │  *   57. UMC1820 Multichannel
-                 │
-                 ├─ Sources:
-                 │  *   91. Monitor of Built-in Audio
-            ''')
-        if command == ["pw-cli", "ls", "Node"]:
-            return '''
-                id 91, type PipeWire:Interface:Node/3
-                node.name = "alsa_input.usb-...-input"
-                media.class = "Audio/Source"
-                id 57, type PipeWire:Interface:Node/3
-                node.name = "alsa_output.usb-...-analog-stereo"
-                media.class = "Audio/Sink"
-            '''
+        if command == ["pw-dump"]:
+            return pw_dump_fixture
         return ""
 
     adapter = PipeWireAdapter(config=config, runner=fake_runner)
@@ -139,11 +150,15 @@ def test_pipewire_adapter_applies_routes_to_live_nodes():
 
     assert result["applied"][0]["input"] == "Pi"
     assert result["applied"][0]["zone"] == "Bureau Martijn"
-    assert ["pw-link", "91", "57"] in commands
+    assert result["applied"][0]["source_id"] == "91"
+    assert result["applied"][0]["sink_id"] == "57"
+    assert ["pw-link", "200", "300"] in commands
+    assert ["pw-link", "201", "301"] in commands
+    assert ["wpctl", "set-volume", "57", "1.000"] in commands
 
 
-def test_route_manager_routes_input_to_zones_and_mixes():
-    manager = RouteManager()
+def test_route_manager_routes_input_to_zones_and_mixes(tmp_path):
+    manager = RouteManager(state_path=tmp_path / "routes.json")
     manager.add_input("tv", ["L", "R"])
     manager.add_input("music", ["L", "R"])
     manager.add_zone("living_room", "default", ["L", "R"])
@@ -157,8 +172,8 @@ def test_route_manager_routes_input_to_zones_and_mixes():
     assert manager.state["kitchen"]["music"] == -3.0
 
 
-def test_route_manager_group_command_expands_all_zones():
-    manager = RouteManager()
+def test_route_manager_group_command_expands_all_zones(tmp_path):
+    manager = RouteManager(state_path=tmp_path / "routes.json")
     manager.add_input("tv", ["L", "R"])
     manager.add_zone("lounge", "default", ["L", "R"])
     manager.add_zone("bedroom", "default", ["L", "R"])

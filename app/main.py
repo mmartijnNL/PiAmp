@@ -23,8 +23,10 @@ def main() -> None:
     config = load_config(args.config)
     print("Config loaded.")
 
+    adapter = PipeWireAdapter(config=config)
+
     print("Checking configured audio devices...")
-    validation = PipeWireAdapter(config=config).validate_configured_devices()
+    validation = adapter.validate_configured_devices()
     if not validation["ok"]:
         missing = ", ".join(validation["missing_devices"]) if validation["missing_devices"] else "unknown"
         print(f"ERROR: configured audio devices are not available on this machine: {missing}")
@@ -36,7 +38,22 @@ def main() -> None:
     print(f"Loaded route state from {args.state}")
     print(f"Known zones: {', '.join(route_manager.zones.keys()) or 'none'}")
 
-    AudioAPI(route_manager, PipeWireAdapter(config=config))
+    active_routes = {
+        zone_name: input_map for zone_name, input_map in route_manager.state.items() if input_map
+    }
+    if active_routes:
+        print(f"Applying {sum(len(m) for m in active_routes.values())} configured route(s) to PipeWire...")
+        try:
+            result = adapter.apply_routes(route_manager.state)
+        except ValueError as exc:
+            print(f"ERROR: failed to apply configured routes: {exc}")
+            raise SystemExit(1) from exc
+        for route in result["applied"]:
+            print(f"  linked '{route['input']}' -> zone '{route['zone']}' ({route['source']} -> {route['sink']})")
+    else:
+        print("No active routes in persisted state; nothing to apply yet.")
+
+    AudioAPI(route_manager, adapter)
     print("PiAmp ready.")
 
 

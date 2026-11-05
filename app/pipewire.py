@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 from typing import Any, Callable, Sequence
@@ -71,13 +72,6 @@ class PipeWireAdapter:
         return parsed
 
     @staticmethod
-    def _parse_wpctl_audio_ids(output: str) -> dict[str, list[tuple[int, str]]]:
-        parsed: dict[str, list[tuple[int, str]]] = {"sinks": [], "sources": []}
-        for section, node_id, name in PipeWireAdapter._iter_wpctl_audio_entries(output):
-            parsed[section].append((node_id, name))
-        return parsed
-
-    @staticmethod
     def _parse_pw_cli_nodes(output: str) -> list[dict[str, str]]:
         nodes: list[dict[str, str]] = []
         current: dict[str, str] | None = None
@@ -101,6 +95,54 @@ class PipeWireAdapter:
 
         if current:
             nodes.append(current)
+
+        return nodes
+
+    @staticmethod
+    def _parse_pw_dump(output: str) -> dict[int, dict[str, Any]]:
+        """Parse `pw-dump` JSON into audio nodes keyed by node id, each with
+        its ports indexed by direction ("in"/"out") and channel number.
+
+        `port.id` in PipeWire is 0-based *per node and per direction* (e.g. a
+        stereo sink has playback ports 0/1 and monitor ports 0/1), which lines
+        up directly with the 0-based `channels` indices used in config.yaml.
+        The port object's own top-level `id` is what `pw-link` needs to
+        actually create a link (node ids and port channel numbers are not
+        valid `pw-link` arguments).
+        """
+        try:
+            objects = json.loads(output)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
+        if not isinstance(objects, list):
+            return {}
+
+        nodes: dict[int, dict[str, Any]] = {}
+        for obj in objects:
+            if not isinstance(obj, dict) or obj.get("type") != "PipeWire:Interface:Node":
+                continue
+            props = ((obj.get("info") or {}).get("props")) or {}
+            media_class = props.get("media.class")
+            if media_class not in {"Audio/Sink", "Audio/Source"}:
+                continue
+            nodes[obj["id"]] = {
+                "node_id": obj["id"],
+                "name": props.get("node.description") or props.get("node.name") or "",
+                "media_class": media_class,
+                "ports": {"in": {}, "out": {}},
+            }
+
+        for obj in objects:
+            if not isinstance(obj, dict) or obj.get("type") != "PipeWire:Interface:Port":
+                continue
+            props = ((obj.get("info") or {}).get("props")) or {}
+            node = nodes.get(props.get("node.id"))
+            direction = props.get("port.direction")
+            channel = props.get("port.id")
+            if node is None or direction not in {"in", "out"} or channel is None:
+                continue
+            node["ports"][direction][int(channel)] = obj["id"]
 
         return nodes
 
@@ -198,21 +240,23 @@ class PipeWireAdapter:
             "missing_devices": sorted(set(missing)),
         }
 
-    def apply_routes(self, route_state: dict[str, dict[str, float]]) -> dict[str, Any]:
+    def apply_routes(self, route_state: dict[str, dict[str, float]], dry_run: bool = False) -> dict[str, Any]:
         if self.config is None:
             return {"applied": []}
 
-        wpctl_output = self.runner(["wpctl", "status"])
-        audio = self._parse_wpctl_audio_ids(wpctl_output)
-        sink_lookup = {self._normalize_device_name(name): sink_id for sink_id, name in audio.get("sinks", [])}
-        # Inputs may also name a sink (e.g. "Built-in Audio Stereo") to capture
-        # that sink's monitor ports, i.e. whatever applications are playing
-        # through it. Sinks are the fallback so a dedicated Source with the
-        # same name (like the UMC1820's capture node) still takes priority.
-        source_lookup = dict(sink_lookup)
-        source_lookup.update(
-            {self._normalize_device_name(name): source_id for source_id, name in audio.get("sources", [])}
-        )
+        nodes = self._parse_pw_dump(self.runner(["pw-dump"]))
+        nodes_by_name: dict[str, list[dict[str, Any]]] = {}
+        for node in nodes.values():
+            nodes_by_name.setdefault(self._normalize_device_name(node["name"]), []).append(node)
+
+        def resolve_node(device_name: str, preferred_class: str) -> dict[str, Any] | None:
+            candidates = nodes_by_name.get(self._normalize_device_name(device_name), [])
+            if not candidates:
+                return None
+            preferred = [n for n in candidates if n["media_class"] == preferred_class]
+            # Fall back to any matching node so e.g. a Sink's monitor ports can
+            # be used as an input device (capturing whatever apps play through it).
+            return (preferred or candidates)[0]
 
         applied: list[dict[str, Any]] = []
         for zone_name, input_map in route_state.items():
@@ -220,31 +264,56 @@ class PipeWireAdapter:
             if zone is None:
                 continue
 
-            sink_id = sink_lookup.get(self._normalize_device_name(str(zone.device)))
-            if sink_id is None:
+            zone_node = resolve_node(str(zone.device), "Audio/Sink")
+            if zone_node is None:
                 raise ValueError(f"zone device not found in PipeWire: {zone.device}")
+            zone_channels = list(getattr(zone, "channels", None) or [0, 1])
 
-            for input_name in input_map:
+            for input_name, gain_db in input_map.items():
                 input_def = next((item for item in self.config.inputs if item.name == input_name), None)
                 if input_def is None:
                     continue
 
                 source_cfg = input_def.source if isinstance(input_def.source, dict) else {"device": input_def.source}
                 source_name = str(source_cfg.get("device", input_def.source or "unknown-source"))
-                source_id = source_lookup.get(self._normalize_device_name(source_name))
-                if source_id is None:
+                source_node = resolve_node(source_name, "Audio/Source")
+                if source_node is None:
                     raise ValueError(f"input device not found in PipeWire: {source_name}")
 
-                self.runner(["pw-link", str(source_id), str(sink_id)])
+                input_channels = list(source_cfg.get("channels", getattr(input_def, "channels", None)) or [0, 1])
+
+                links: list[dict[str, str]] = []
+                for in_channel, out_channel in zip(input_channels, zone_channels):
+                    src_port = source_node["ports"]["out"].get(int(in_channel))
+                    dst_port = zone_node["ports"]["in"].get(int(out_channel))
+                    if src_port is None or dst_port is None:
+                        continue
+                    if not dry_run:
+                        self.runner(["pw-link", str(src_port), str(dst_port)])
+                    links.append({"source_port": str(src_port), "sink_port": str(dst_port)})
+
+                # PipeWire has no native per-link gain; the closest native
+                # control is the zone sink's own volume. This means gain is
+                # shared across every input currently routed to this zone,
+                # not applied per-route. Clamp to unity (1.0 = 0 dB) so a
+                # misconfigured positive gain can't drive the amp past full
+                # volume unexpectedly.
+                linear_gain = max(0.0, min(1.0, 10 ** (float(gain_db) / 20)))
+                if not dry_run:
+                    self.runner(["wpctl", "set-volume", str(zone_node["node_id"]), f"{linear_gain:.3f}"])
+
                 applied.append({
                     "input": input_name,
                     "zone": zone_name,
                     "source": source_name,
                     "sink": str(zone.device),
-                    "source_id": str(source_id),
-                    "sink_id": str(sink_id),
-                    "gain_db": float(input_map[input_name]),
+                    "source_id": str(source_node["node_id"]),
+                    "sink_id": str(zone_node["node_id"]),
+                    "links": links,
+                    "gain_db": float(gain_db),
                 })
+
+        return {"applied": applied, "dry_run": dry_run}
 
         return {"applied": applied}
 

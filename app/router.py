@@ -19,7 +19,7 @@ class RouteManager:
             for input_def in config.inputs:
                 self.add_input(input_def.name, list(input_def.channels))
             for zone_def in config.zones:
-                self.add_zone(zone_def.name, zone_def.output_device, list(zone_def.output_channels))
+                self.add_zone(zone_def.name, zone_def.device, list(zone_def.channels))
 
         self.state = self.state_store.load()
         for zone_name in self._zones:

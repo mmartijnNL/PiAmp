@@ -3,7 +3,7 @@ inputs:
     source:
       device: "Built-in Audio Stereo"
       channels: [0, 1]
-  - name: "Test Input"
+  - name: "TV"
     source:
       device: "UMC1820 Multichannel"
       channels: [0, 1]
@@ -11,4 +11,4 @@ inputs:
 zones:
   - name: "Bureau Martijn"
     device: "UMC1820 Multichannel"
-    channels: [0, 1]
+    channels: [2, 3]

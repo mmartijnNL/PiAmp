@@ -99,24 +99,28 @@ class PipeWireAdapter:
         return nodes
 
     @staticmethod
-    def _parse_pw_dump(output: str) -> dict[int, dict[str, Any]]:
-        """Parse `pw-dump` JSON into audio nodes keyed by node id, each with
-        its ports indexed by direction ("in"/"out") and channel number.
+    def _parse_pw_dump(output: str) -> tuple[dict[int, dict[str, Any]], list[tuple[int, int]]]:
+        """Parse `pw-dump` JSON into (audio nodes, existing links).
 
-        `port.id` in PipeWire is 0-based *per node and per direction* (e.g. a
-        stereo sink has playback ports 0/1 and monitor ports 0/1), which lines
-        up directly with the 0-based `channels` indices used in config.yaml.
-        The port object's own top-level `id` is what `pw-link` needs to
-        actually create a link (node ids and port channel numbers are not
-        valid `pw-link` arguments).
+        Nodes are keyed by node id, each with its ports indexed by direction
+        ("in"/"out") and channel number. `port.id` in PipeWire is 0-based *per
+        node and per direction* (e.g. a stereo sink has playback ports 0/1 and
+        monitor ports 0/1), which lines up directly with the 0-based
+        `channels` indices used in config.yaml. The port object's own
+        top-level `id` is what `pw-link` needs to actually create a link
+        (node ids and port channel numbers are not valid `pw-link` arguments).
+
+        Links are returned as (output_port_id, input_port_id) pairs so
+        `apply_routes` can detect and remove stale links left over from a
+        previous run (e.g. after a zone's configured channels changed).
         """
         try:
             objects = json.loads(output)
         except (json.JSONDecodeError, TypeError):
-            return {}
+            return {}, []
 
         if not isinstance(objects, list):
-            return {}
+            return {}, []
 
         nodes: dict[int, dict[str, Any]] = {}
         for obj in objects:
@@ -144,7 +148,18 @@ class PipeWireAdapter:
                 continue
             node["ports"][direction][int(channel)] = obj["id"]
 
-        return nodes
+        links: list[tuple[int, int]] = []
+        for obj in objects:
+            if not isinstance(obj, dict) or obj.get("type") != "PipeWire:Interface:Link":
+                continue
+            info = obj.get("info") or {}
+            output_port = info.get("output-port-id")
+            input_port = info.get("input-port-id")
+            if output_port is None or input_port is None:
+                continue
+            links.append((int(output_port), int(input_port)))
+
+        return nodes, links
 
     def discover_devices(self) -> dict[str, Any]:
         wpctl_output = self.runner(["wpctl", "status"])
@@ -244,7 +259,7 @@ class PipeWireAdapter:
         if self.config is None:
             return {"applied": []}
 
-        nodes = self._parse_pw_dump(self.runner(["pw-dump"]))
+        nodes, existing_links = self._parse_pw_dump(self.runner(["pw-dump"]))
         nodes_by_name: dict[str, list[dict[str, Any]]] = {}
         for node in nodes.values():
             nodes_by_name.setdefault(self._normalize_device_name(node["name"]), []).append(node)
@@ -268,7 +283,14 @@ class PipeWireAdapter:
             if zone_node is None:
                 raise ValueError(f"zone device not found in PipeWire: {zone.device}")
             zone_channels = list(getattr(zone, "channels", None) or [0, 1])
+            zone_port_ids = set(zone_node["ports"]["in"].values())
 
+            # Resolve every input routed to this zone and the exact port pairs
+            # it needs *before* touching any links, so multiple inputs mixed
+            # into the same zone (intentionally) don't get disconnected by
+            # each other in the reconciliation step below.
+            desired_links: set[tuple[int, int]] = set()
+            per_input: list[tuple[str, float, str, dict[str, Any], list[tuple[int, int]]]] = []
             for input_name, gain_db in input_map.items():
                 input_def = next((item for item in self.config.inputs if item.name == input_name), None)
                 if input_def is None:
@@ -282,13 +304,32 @@ class PipeWireAdapter:
 
                 input_channels = list(source_cfg.get("channels", getattr(input_def, "channels", None)) or [0, 1])
 
-                links: list[dict[str, str]] = []
+                link_pairs: list[tuple[int, int]] = []
                 for in_channel, out_channel in zip(input_channels, zone_channels):
                     src_port = source_node["ports"]["out"].get(int(in_channel))
                     dst_port = zone_node["ports"]["in"].get(int(out_channel))
                     if src_port is None or dst_port is None:
                         continue
-                    if not dry_run:
+                    link_pairs.append((src_port, dst_port))
+                    desired_links.add((src_port, dst_port))
+
+                per_input.append((input_name, float(gain_db), source_name, source_node, link_pairs))
+
+            # Reconcile: remove any existing link feeding one of this zone's
+            # ports that isn't part of the current desired set. Without this,
+            # re-applying routes after changing a zone's configured channels
+            # or an input's source device leaves old links in place (e.g. a
+            # previous channel assignment keeps leaking audio to an output
+            # that's no longer meant to carry it).
+            if not dry_run:
+                for out_port, in_port in existing_links:
+                    if in_port in zone_port_ids and (out_port, in_port) not in desired_links:
+                        self.runner(["pw-link", "-d", str(out_port), str(in_port)])
+
+            for input_name, gain_db, source_name, source_node, link_pairs in per_input:
+                links: list[dict[str, str]] = []
+                for src_port, dst_port in link_pairs:
+                    if not dry_run and (src_port, dst_port) not in existing_links:
                         self.runner(["pw-link", str(src_port), str(dst_port)])
                     links.append({"source_port": str(src_port), "sink_port": str(dst_port)})
 
@@ -314,8 +355,6 @@ class PipeWireAdapter:
                 })
 
         return {"applied": applied, "dry_run": dry_run}
-
-        return {"applied": applied}
 
     def route_plan(self, route_state: dict[str, dict[str, float]]) -> dict[str, Any]:
         devices = self.discover_devices()

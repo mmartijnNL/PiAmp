@@ -6,12 +6,12 @@ from app.config import load_config
 def test_load_config_builds_input_and_zone_models():
     config = load_config("config.yaml")
 
-    assert [i.name for i in config.inputs] == ["Pi", "Test Input"]
+    assert [i.name for i in config.inputs] == ["Pi", "TV"]
     assert [z.name for z in config.zones] == ["Bureau Martijn"]
     assert config.routes == ()
 
     zone = next(z for z in config.zones if z.name == "Bureau Martijn")
-    assert zone.channels == [0, 1]
+    assert zone.channels == [2, 3]
     assert zone.device == "UMC1820 Multichannel"
 
 

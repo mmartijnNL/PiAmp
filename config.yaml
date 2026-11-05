@@ -6,9 +6,9 @@ inputs:
   - name: "TV"
     source:
       device: "UMC1820 Multichannel"
-      channels: [0, 1]
+      channels: [2, 3]
 
 zones:
   - name: "Bureau Martijn"
     device: "UMC1820 Multichannel"
-    channels: [2, 3]
+    channels: [0, 1]

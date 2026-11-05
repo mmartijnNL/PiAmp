@@ -157,6 +157,63 @@ def test_pipewire_adapter_applies_routes_to_live_nodes():
     assert ["wpctl", "set-volume", "57", "1.000"] in commands
 
 
+def test_pipewire_adapter_removes_stale_links_on_reapply():
+    # Simulates re-running after a zone's configured channels changed: an old
+    # link from a previous run (port 400 -> port 300, no longer part of the
+    # current config) should be disconnected, while the fresh link for the
+    # currently configured channel (200 -> 300) should be (re)created.
+    config = type("Cfg", (), {
+        "inputs": [type("Input", (), {"name": "Pi", "source": {"device": "Monitor of Built-in Audio", "channels": [0, 1]}})()],
+        "zones": [type("Zone", (), {"name": "Bureau Martijn", "device": "UMC1820 Multichannel", "channels": [0, 1]})()],
+    })()
+
+    commands = []
+
+    pw_dump_fixture = json.dumps([
+        {
+            "id": 91, "type": "PipeWire:Interface:Node",
+            "info": {"props": {"node.description": "Monitor of Built-in Audio", "media.class": "Audio/Source"}},
+        },
+        {
+            "id": 57, "type": "PipeWire:Interface:Node",
+            "info": {"props": {"node.description": "UMC1820 Multichannel", "media.class": "Audio/Sink"}},
+        },
+        {
+            "id": 200, "type": "PipeWire:Interface:Port",
+            "info": {"props": {"node.id": 91, "port.direction": "out", "port.id": 0}},
+        },
+        {
+            "id": 201, "type": "PipeWire:Interface:Port",
+            "info": {"props": {"node.id": 91, "port.direction": "out", "port.id": 1}},
+        },
+        {
+            "id": 300, "type": "PipeWire:Interface:Port",
+            "info": {"props": {"node.id": 57, "port.direction": "in", "port.id": 0}},
+        },
+        {
+            "id": 301, "type": "PipeWire:Interface:Port",
+            "info": {"props": {"node.id": 57, "port.direction": "in", "port.id": 1}},
+        },
+        {
+            "id": 1, "type": "PipeWire:Interface:Link",
+            "info": {"output-port-id": 400, "input-port-id": 300},
+        },
+    ])
+
+    def fake_runner(command):
+        commands.append(command)
+        if command == ["pw-dump"]:
+            return pw_dump_fixture
+        return ""
+
+    adapter = PipeWireAdapter(config=config, runner=fake_runner)
+    adapter.apply_routes({"Bureau Martijn": {"Pi": 0.0}})
+
+    assert ["pw-link", "-d", "400", "300"] in commands
+    assert ["pw-link", "200", "300"] in commands
+    assert ["pw-link", "201", "301"] in commands
+
+
 def test_route_manager_routes_input_to_zones_and_mixes(tmp_path):
     manager = RouteManager(state_path=tmp_path / "routes.json")
     manager.add_input("tv", ["L", "R"])

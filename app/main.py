@@ -21,7 +21,7 @@ def main() -> None:
     route_manager = RouteManager(config, state_path=args.state)
     api = AudioAPI(route_manager)
 
-    result = api.play("tv", ["all"], 0.0)
+    result = api.play(config.inputs[0].name, ["all"], 0.0) if config.inputs else api.handle_command({"action": "status"})
     print(json.dumps(result, indent=2, sort_keys=True))
 
 

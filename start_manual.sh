@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CMD="cd \"$SCRIPT_DIR\" && /usr/bin/python3 -m app.main --config config.yaml --state state/routes.json"
+PAUSE_CMD="echo; echo 'Press Enter to close this window...'; read -r -p ''"
 
 TERMINAL=""
 for candidate in x-terminal-emulator gnome-terminal konsole xfce4-terminal mate-terminal lxterminal terminator uxterm xterm; do
@@ -16,16 +17,16 @@ if [[ -n "$TERMINAL" ]]; then
   echo "Opening PiAmp in a visible terminal..."
   case "$TERMINAL" in
     gnome-terminal)
-      exec "$TERMINAL" -- bash -lc "$CMD"
+      exec "$TERMINAL" -- bash -lc "$CMD; $PAUSE_CMD"
       ;;
     konsole)
-      exec "$TERMINAL" --noclose -e bash -lc "$CMD"
+      exec "$TERMINAL" --noclose -e bash -lc "$CMD; $PAUSE_CMD"
       ;;
     *)
-      exec "$TERMINAL" -e bash -lc "$CMD"
+      exec "$TERMINAL" -e bash -lc "$CMD; $PAUSE_CMD"
       ;;
   esac
 fi
 
 echo "No graphical terminal emulator was found; starting in the current terminal instead."
-exec bash -lc "$CMD"
+exec bash -lc "$CMD; $PAUSE_CMD"

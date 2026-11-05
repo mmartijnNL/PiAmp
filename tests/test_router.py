@@ -93,6 +93,42 @@ def test_pipewire_adapter_reports_missing_configured_devices():
     assert "UMC1820 Multichannel" in result["missing_devices"]
 
 
+def test_pipewire_adapter_applies_routes_to_live_nodes():
+    config = type("Cfg", (), {
+        "inputs": [type("Input", (), {"name": "Pi", "source": {"device": "Monitor of Built-in Audio", "channels": [0, 1]}})()],
+        "zones": [type("Zone", (), {"name": "Bureau Martijn", "device": "UMC1820 Multichannel", "channels": [0, 1]})()],
+    })()
+
+    commands = []
+
+    def fake_runner(command):
+        commands.append(command)
+        if command[:3] == ["wpctl", "list", "audio"]:
+            return '''
+                Sinks:
+                    * 57. UMC1820 Multichannel
+                Sources:
+                    * 91. Monitor of Built-in Audio
+            '''
+        if command == ["pw-cli", "ls", "Node"]:
+            return '''
+                id 91, type PipeWire:Interface:Node/3
+                node.name = "alsa_input.usb-...-input"
+                media.class = "Audio/Source"
+                id 57, type PipeWire:Interface:Node/3
+                node.name = "alsa_output.usb-...-analog-stereo"
+                media.class = "Audio/Sink"
+            '''
+        return ""
+
+    adapter = PipeWireAdapter(config=config, runner=fake_runner)
+    result = adapter.apply_routes({"Bureau Martijn": {"Pi": 0.0}})
+
+    assert result["applied"][0]["input"] == "Pi"
+    assert result["applied"][0]["zone"] == "Bureau Martijn"
+    assert ["pw-link", "91", "57"] in commands
+
+
 def test_route_manager_routes_input_to_zones_and_mixes():
     manager = RouteManager()
     manager.add_input("tv", ["L", "R"])

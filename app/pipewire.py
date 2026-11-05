@@ -40,6 +40,24 @@ class PipeWireAdapter:
         return parsed
 
     @staticmethod
+    def _parse_wpctl_audio_ids(output: str) -> dict[str, list[tuple[int, str]]]:
+        parsed: dict[str, list[tuple[int, str]]] = {"sinks": [], "sources": []}
+        section: str | None = None
+
+        for raw_line in output.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.endswith(":"):
+                section = line[:-1].lower()
+                continue
+            match = re.search(r"(?:\*\s*)?(\d+)\.\s*(.+)", line)
+            if match and section in {"sinks", "sources"}:
+                parsed[section].append((int(match.group(1)), match.group(2).strip()))
+
+        return parsed
+
+    @staticmethod
     def _parse_pw_cli_nodes(output: str) -> list[dict[str, str]]:
         nodes: list[dict[str, str]] = []
         current: dict[str, str] | None = None
@@ -159,6 +177,49 @@ class PipeWireAdapter:
             "ok": not missing,
             "missing_devices": sorted(set(missing)),
         }
+
+    def apply_routes(self, route_state: dict[str, dict[str, float]]) -> dict[str, Any]:
+        if self.config is None:
+            return {"applied": []}
+
+        wpctl_output = self.runner(["wpctl", "list", "audio"])
+        audio = self._parse_wpctl_audio_ids(wpctl_output)
+        source_lookup = {self._normalize_device_name(name): source_id for source_id, name in audio.get("sources", [])}
+        sink_lookup = {self._normalize_device_name(name): sink_id for sink_id, name in audio.get("sinks", [])}
+
+        applied: list[dict[str, Any]] = []
+        for zone_name, input_map in route_state.items():
+            zone = next((item for item in self.config.zones if item.name == zone_name), None)
+            if zone is None:
+                continue
+
+            sink_id = sink_lookup.get(self._normalize_device_name(str(zone.device)))
+            if sink_id is None:
+                raise ValueError(f"zone device not found in PipeWire: {zone.device}")
+
+            for input_name in input_map:
+                input_def = next((item for item in self.config.inputs if item.name == input_name), None)
+                if input_def is None:
+                    continue
+
+                source_cfg = input_def.source if isinstance(input_def.source, dict) else {"device": input_def.source}
+                source_name = str(source_cfg.get("device", input_def.source or "unknown-source"))
+                source_id = source_lookup.get(self._normalize_device_name(source_name))
+                if source_id is None:
+                    raise ValueError(f"input device not found in PipeWire: {source_name}")
+
+                self.runner(["pw-link", str(source_id), str(sink_id)])
+                applied.append({
+                    "input": input_name,
+                    "zone": zone_name,
+                    "source": source_name,
+                    "sink": str(zone.device),
+                    "source_id": str(source_id),
+                    "sink_id": str(sink_id),
+                    "gain_db": float(input_map[input_name]),
+                })
+
+        return {"applied": applied}
 
     def route_plan(self, route_state: dict[str, dict[str, float]]) -> dict[str, Any]:
         devices = self.discover_devices()

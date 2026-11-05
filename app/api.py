@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from .pipewire import PipeWireAdapter
 from .router import RouteManager
 
 
 class AudioAPI:
-    def __init__(self, route_manager: RouteManager):
+    def __init__(self, route_manager: RouteManager, pipewire_adapter: PipeWireAdapter | None = None):
         self.route_manager = route_manager
+        self.pipewire_adapter = pipewire_adapter
 
     def play(self, input_name: str, zones: list[str] | str = "all", gain_db: float = 0.0) -> dict[str, Any]:
         return self.handle_command({
@@ -24,13 +26,19 @@ class AudioAPI:
             if "routes" in payload:
                 routes = payload["routes"]
                 self.route_manager.route_many(routes)
-                return {"status": "ok", "state": self.route_manager.state}
+                result = {"status": "ok", "state": self.route_manager.state}
+                if self.pipewire_adapter is not None:
+                    result["applied"] = self.pipewire_adapter.apply_routes(self.route_manager.state)
+                return result
 
             input_name = str(payload["input"])
             zones = payload.get("zones", ["all"])
             gain_db = float(payload.get("gain_db", 0.0))
             self.route_manager.route(input_name, zones, gain_db)
-            return {"status": "ok", "state": self.route_manager.state}
+            result = {"status": "ok", "state": self.route_manager.state}
+            if self.pipewire_adapter is not None:
+                result["applied"] = self.pipewire_adapter.apply_routes(self.route_manager.state)
+            return result
 
         if action == "status":
             return {"status": "ok", "state": self.route_manager.state}

@@ -36,7 +36,7 @@ def main() -> None:
     print(f"Loaded route state from {args.state}")
     print(f"Known zones: {', '.join(route_manager.zones.keys()) or 'none'}")
 
-    AudioAPI(route_manager)
+    AudioAPI(route_manager, PipeWireAdapter(config=config))
     print("PiAmp ready.")
 
 

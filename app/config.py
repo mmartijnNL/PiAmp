@@ -49,8 +49,8 @@ def load_config(path: str | Path) -> SystemConfig:
     parsed_zones = tuple(
         ZoneDefinition(
             name=item["name"],
-            output_device=item.get("output_device", "default"),
-            output_channels=list(item.get("output_channels", [])),
+            device=item.get("device", "default"),
+            channels=list(item.get("channels", [])),
         )
         for item in zone_defs
         if isinstance(item, dict)

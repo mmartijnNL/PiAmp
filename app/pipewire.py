@@ -18,6 +18,10 @@ class PipeWireAdapter:
         return result.stdout or result.stderr or ""
 
     @staticmethod
+    def _normalize_device_name(name: str) -> str:
+        return re.sub(r"\s+", " ", name or "").strip().lower()
+
+    @staticmethod
     def _parse_wpctl_audio(output: str) -> dict[str, list[str]]:
         parsed: dict[str, list[str]] = {"sinks": [], "sources": []}
         section: str | None = None
@@ -67,7 +71,7 @@ class PipeWireAdapter:
         wpctl_data = self._parse_wpctl_audio(wpctl_output)
 
         source_device = None
-        output_devices = wpctl_data.get("sinks", [])
+        output_devices = list(wpctl_data.get("sinks", []))
 
         if wpctl_data.get("sources"):
             source_device = wpctl_data["sources"][0]
@@ -86,7 +90,7 @@ class PipeWireAdapter:
                     output_devices.append(node.get("name", "unknown-sink"))
 
         if self.config is not None and not output_devices:
-            output_devices = [zone.output_device for zone in self.config.zones]
+            output_devices = [zone.device for zone in self.config.zones]
 
         return {
             "source_device": source_device or "unknown-source",
@@ -94,6 +98,38 @@ class PipeWireAdapter:
             "inputs": [input_def.name for input_def in (self.config.inputs if self.config else [])],
             "zones": [zone.name for zone in (self.config.zones if self.config else [])],
         }
+
+    def resolve_configured_devices(self) -> dict[str, dict[str, Any]]:
+        if self.config is None:
+            return {}
+
+        live = self.discover_devices()
+        live_lookup = {
+            self._normalize_device_name(name): name
+            for name in [*live.get("output_devices", []), live.get("source_device", "")]
+            if name
+        }
+
+        resolved: dict[str, dict[str, Any]] = {}
+
+        for input_def in self.config.inputs:
+            source_cfg = input_def.source if isinstance(input_def.source, dict) else {"device": input_def.source}
+            device_name = str(source_cfg.get("device", input_def.source or "unknown-source"))
+            normalized = self._normalize_device_name(device_name)
+            resolved[input_def.name] = {
+                "device": live_lookup.get(normalized, device_name),
+                "channels": list(source_cfg.get("channels", getattr(input_def, "channels", []))),
+            }
+
+        for zone in self.config.zones:
+            device_name = str(getattr(zone, "device", "default"))
+            normalized = self._normalize_device_name(device_name)
+            resolved[zone.name] = {
+                "device": live_lookup.get(normalized, device_name),
+                "channels": list(getattr(zone, "channels", [])),
+            }
+
+        return resolved
 
     def route_plan(self, route_state: dict[str, dict[str, float]]) -> dict[str, Any]:
         devices = self.discover_devices()

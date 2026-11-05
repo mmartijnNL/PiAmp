@@ -7,13 +7,13 @@ def test_load_config_builds_input_and_zone_models():
     config = load_config("config.yaml")
 
     assert config.name == "piamp"
-    assert [i.name for i in config.inputs] == ["tv", "music", "aux"]
-    assert [z.name for z in config.zones] == ["living_room", "kitchen", "office"]
+    assert [i.name for i in config.inputs] == ["Pi", "Test Input"]
+    assert [z.name for z in config.zones] == ["Bureau Martijn"]
     assert config.routes == ()
 
-    zone = next(z for z in config.zones if z.name == "living_room")
-    assert zone.output_channels == ["L", "R"]
-    assert zone.output_device == "default"
+    zone = next(z for z in config.zones if z.name == "Bureau Martijn")
+    assert zone.channels == [0, 1]
+    assert zone.device == "UMC1820 Multichannel"
 
 
 def test_load_config_rejects_duplicate_names(tmp_path):

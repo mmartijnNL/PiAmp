@@ -34,6 +34,35 @@ def test_pipewire_adapter_discovers_source_and_output_nodes():
     assert "HDMI Audio" in devices["output_devices"]
 
 
+def test_pipewire_adapter_resolves_configured_input_and_zone_devices():
+    config = type("Cfg", (), {
+        "inputs": [
+            type("Input", (), {"name": "Pi", "source": {"device": "Monitor of Built-in Audio", "channels": [0, 1]}})(),
+            type("Input", (), {"name": "Test Input", "source": {"device": "UMC1820 Multichannel", "channels": [0, 1]}})(),
+        ],
+        "zones": [
+            type("Zone", (), {"name": "Bureau Martijn", "device": "UMC1820 Multichannel", "channels": [0, 1]})(),
+        ],
+    })()
+
+    def fake_runner(command):
+        if command[:3] == ["wpctl", "list", "audio"]:
+            return '''
+                Sinks:
+                    * 58. UMC1820 Multichannel
+                Sources:
+                    * 91. Monitor of Built-in Audio
+            '''
+        return ""
+
+    adapter = PipeWireAdapter(config=config, runner=fake_runner)
+    resolved = adapter.resolve_configured_devices()
+
+    assert resolved["Pi"]["device"] == "Monitor of Built-in Audio"
+    assert resolved["Test Input"]["device"] == "UMC1820 Multichannel"
+    assert resolved["Bureau Martijn"]["device"] == "UMC1820 Multichannel"
+
+
 def test_route_manager_routes_input_to_zones_and_mixes():
     manager = RouteManager()
     manager.add_input("tv", ["L", "R"])

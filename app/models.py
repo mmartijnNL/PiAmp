@@ -1,19 +1,19 @@
 from dataclasses import dataclass, field
-from typing import Tuple
+from typing import Any, Tuple
 
 
 @dataclass(frozen=True)
 class InputDefinition:
     name: str
-    source: str = "pipewire"
-    channels: list[str] = field(default_factory=list)
+    source: str | dict[str, Any] = "pipewire"
+    channels: list[int | str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class ZoneDefinition:
     name: str
-    output_device: str = "default"
-    output_channels: list[str] = field(default_factory=list)
+    device: str = "default"
+    channels: list[int | str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

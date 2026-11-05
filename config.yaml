@@ -1,26 +1,14 @@
-name: piamp
-
-# This file defines static topology only.
-# Active routes and mixing are runtime state managed via the API.
-
 inputs:
-  - name: tv
-    source: pipewire
-    channels: ["L", "R"]
-  - name: music
-    source: pipewire
-    channels: ["L", "R"]
-  - name: aux
-    source: pipewire
-    channels: ["L", "R"]
+  - name: "Pi"
+    source:
+      device: "Monitor of Built-in Audio"
+      channels: [0, 1]
+  - name: "Test Input"
+    source:
+      device: "UMC1820 Multichannel"
+      channels: [0, 1]
 
 zones:
-  - name: living_room
-    output_device: default
-    output_channels: ["L", "R"]
-  - name: kitchen
-    output_device: default
-    output_channels: ["L", "R"]
-  - name: office
-    output_device: default
-    output_channels: ["L", "R"]
+  - name: "Bureau Martijn"
+    device: "UMC1820 Multichannel"
+    channels: [0, 1]

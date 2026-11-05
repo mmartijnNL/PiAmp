@@ -3,6 +3,10 @@ inputs:
     source:
       device: "Built-in Audio Stereo"
       channels: [0, 1]
+  - name: "Aux"
+    source:
+      device: "UMC1820 Multichannel"
+      channels: [0, 1]
   - name: "TV"
     source:
       device: "UMC1820 Multichannel"

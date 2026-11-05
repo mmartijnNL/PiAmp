@@ -18,13 +18,19 @@ def test_pipewire_adapter_discovers_source_and_output_nodes():
                 node.name = "alsa_output.pci-0000_01_00.1.hdmi-stereo"
                 media.class = "Audio/Sink"
             '''
-        if command[:3] == ["wpctl", "list", "audio"]:
+        if command == ["wpctl", "status"]:
             return '''
-                Sinks:
-                    * 57. Built-in Audio Stereo
-                    58. HDMI Audio
-                Sources:
-                    * 91. UMC1820 Multichannel
+                Audio
+                 ├─ Sinks:
+                 │  *   57. Built-in Audio Stereo
+                 │      58. HDMI Audio
+                 │
+                 ├─ Sources:
+                 │  *   91. UMC1820 Multichannel
+
+                Video
+                 ├─ Sources:
+                 │  *   99. Not An Audio Source
             '''
         raise AssertionError(f"Unexpected command: {command}")
 
@@ -48,12 +54,14 @@ def test_pipewire_adapter_resolves_configured_input_and_zone_devices():
     })()
 
     def fake_runner(command):
-        if command[:3] == ["wpctl", "list", "audio"]:
+        if command == ["wpctl", "status"]:
             return '''
-                Sinks:
-                    * 58. UMC1820 Multichannel
-                Sources:
-                    * 91. Monitor of Built-in Audio
+                Audio
+                 ├─ Sinks:
+                 │  *   58. UMC1820 Multichannel
+                 │
+                 ├─ Sources:
+                 │  *   91. Monitor of Built-in Audio
             '''
         return ""
 
@@ -76,12 +84,14 @@ def test_pipewire_adapter_reports_missing_configured_devices():
     })()
 
     def fake_runner(command):
-        if command[:3] == ["wpctl", "list", "audio"]:
+        if command == ["wpctl", "status"]:
             return '''
-                Sinks:
-                    * 57. HDMI Audio
-                Sources:
-                    * 91. Internal Mic
+                Audio
+                 ├─ Sinks:
+                 │  *   57. HDMI Audio
+                 │
+                 ├─ Sources:
+                 │  *   91. Internal Mic
             '''
         return ""
 
@@ -103,12 +113,14 @@ def test_pipewire_adapter_applies_routes_to_live_nodes():
 
     def fake_runner(command):
         commands.append(command)
-        if command[:3] == ["wpctl", "list", "audio"]:
+        if command == ["wpctl", "status"]:
             return '''
-                Sinks:
-                    * 57. UMC1820 Multichannel
-                Sources:
-                    * 91. Monitor of Built-in Audio
+                Audio
+                 ├─ Sinks:
+                 │  *   57. UMC1820 Multichannel
+                 │
+                 ├─ Sources:
+                 │  *   91. Monitor of Built-in Audio
             '''
         if command == ["pw-cli", "ls", "Node"]:
             return '''

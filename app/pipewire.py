@@ -22,39 +22,59 @@ class PipeWireAdapter:
         return re.sub(r"\s+", " ", name or "").strip().lower()
 
     @staticmethod
-    def _parse_wpctl_audio(output: str) -> dict[str, list[str]]:
-        parsed: dict[str, list[str]] = {"sinks": [], "sources": []}
+    def _iter_wpctl_audio_entries(output: str):
+        """Yield (section, id, name) for entries under the Audio > Sinks/Sources
+        sections of `wpctl status` output.
+
+        `wpctl status` groups devices under top-level categories (Audio, Video,
+        Settings) that are not indented, and draws each category's sections
+        (Devices, Sinks, Sources, ...) using box-drawing tree characters. We
+        track the current category so that e.g. Video's "Sources:" section
+        (camera devices) is never confused with Audio's "Sources:" section.
+        """
+        category: str | None = None
         section: str | None = None
 
         for raw_line in output.splitlines():
             line = raw_line.strip()
             if not line:
                 continue
-            if line.endswith(":"):
-                section = line[:-1].lower()
-                continue
-            match = re.search(r"(?:\*\s*)?(?:\d+\.)\s*(.+)", line)
-            if match and section in {"sinks", "sources"}:
-                parsed[section].append(match.group(1).strip())
 
+            if not raw_line[:1].isspace():
+                category = line
+                section = None
+                continue
+
+            if category != "Audio":
+                continue
+
+            stripped = re.sub(r"^[\s│├└─]+", "", line)
+
+            section_match = re.match(r"^(Devices|Sinks|Sources|Filters|Streams):\s*$", stripped)
+            if section_match:
+                section = section_match.group(1).lower()
+                continue
+
+            if section not in {"sinks", "sources"}:
+                continue
+
+            entry_match = re.match(r"^(?:\*\s*)?(\d+)\.\s*(.+)$", stripped)
+            if entry_match:
+                name = re.sub(r"\s*\[[^\]]*\]\s*$", "", entry_match.group(2)).strip()
+                yield section, int(entry_match.group(1)), name
+
+    @staticmethod
+    def _parse_wpctl_audio(output: str) -> dict[str, list[str]]:
+        parsed: dict[str, list[str]] = {"sinks": [], "sources": []}
+        for section, _node_id, name in PipeWireAdapter._iter_wpctl_audio_entries(output):
+            parsed[section].append(name)
         return parsed
 
     @staticmethod
     def _parse_wpctl_audio_ids(output: str) -> dict[str, list[tuple[int, str]]]:
         parsed: dict[str, list[tuple[int, str]]] = {"sinks": [], "sources": []}
-        section: str | None = None
-
-        for raw_line in output.splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            if line.endswith(":"):
-                section = line[:-1].lower()
-                continue
-            match = re.search(r"(?:\*\s*)?(\d+)\.\s*(.+)", line)
-            if match and section in {"sinks", "sources"}:
-                parsed[section].append((int(match.group(1)), match.group(2).strip()))
-
+        for section, node_id, name in PipeWireAdapter._iter_wpctl_audio_entries(output):
+            parsed[section].append((node_id, name))
         return parsed
 
     @staticmethod
@@ -85,7 +105,7 @@ class PipeWireAdapter:
         return nodes
 
     def discover_devices(self) -> dict[str, Any]:
-        wpctl_output = self.runner(["wpctl", "list", "audio"])
+        wpctl_output = self.runner(["wpctl", "status"])
         wpctl_data = self._parse_wpctl_audio(wpctl_output)
 
         source_device = None
@@ -182,10 +202,17 @@ class PipeWireAdapter:
         if self.config is None:
             return {"applied": []}
 
-        wpctl_output = self.runner(["wpctl", "list", "audio"])
+        wpctl_output = self.runner(["wpctl", "status"])
         audio = self._parse_wpctl_audio_ids(wpctl_output)
-        source_lookup = {self._normalize_device_name(name): source_id for source_id, name in audio.get("sources", [])}
         sink_lookup = {self._normalize_device_name(name): sink_id for sink_id, name in audio.get("sinks", [])}
+        # Inputs may also name a sink (e.g. "Built-in Audio Stereo") to capture
+        # that sink's monitor ports, i.e. whatever applications are playing
+        # through it. Sinks are the fallback so a dedicated Source with the
+        # same name (like the UMC1820's capture node) still takes priority.
+        source_lookup = dict(sink_lookup)
+        source_lookup.update(
+            {self._normalize_device_name(name): source_id for source_id, name in audio.get("sources", [])}
+        )
 
         applied: list[dict[str, Any]] = []
         for zone_name, input_map in route_state.items():

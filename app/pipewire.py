@@ -162,6 +162,17 @@ class PipeWireAdapter:
         return nodes, links
 
     def discover_devices(self) -> dict[str, Any]:
+        nodes, _links = self._parse_pw_dump(self.runner(["pw-dump"]))
+        if nodes:
+            source_devices = [node["name"] for node in nodes.values() if node["media_class"] == "Audio/Source"]
+            return {
+                "source_device": source_devices[0] if source_devices else "unknown-source",
+                "source_devices": sorted(set(source_devices)),
+                "output_devices": sorted({node["name"] for node in nodes.values() if node["media_class"] == "Audio/Sink"}),
+                "inputs": [input_def.name for input_def in (self.config.inputs if self.config else [])],
+                "zones": [zone.name for zone in (self.config.zones if self.config else [])],
+            }
+
         wpctl_output = self.runner(["wpctl", "status"])
         wpctl_data = self._parse_wpctl_audio(wpctl_output)
 
@@ -201,7 +212,7 @@ class PipeWireAdapter:
         live = self.discover_devices()
         live_lookup = {
             self._normalize_device_name(name): name
-            for name in [*live.get("output_devices", []), live.get("source_device", "")]
+            for name in [*live.get("output_devices", []), *live.get("source_devices", []), live.get("source_device", "")]
             if name
         }
 
@@ -233,7 +244,7 @@ class PipeWireAdapter:
         live = self.discover_devices()
         live_lookup = {
             self._normalize_device_name(name): name
-            for name in [*live.get("output_devices", []), live.get("source_device", "")]
+            for name in [*live.get("output_devices", []), *live.get("source_devices", []), live.get("source_device", "")]
             if name
         }
 

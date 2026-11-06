@@ -5,8 +5,35 @@ from app.pipewire import PipeWireAdapter
 from app.router import RouteManager
 
 
+def test_pipewire_adapter_discovers_pro_audio_nodes_and_validates_all_sources():
+    config = type("Cfg", (), {
+        "inputs": [type("Input", (), {"name": "Aux", "source": {"device": "UMC1820 Pro", "channels": [0, 1]}})()],
+        "zones": [type("Zone", (), {"name": "Office", "device": "Built-in Audio Stereo", "channels": [0, 1]})()],
+    })()
+    nodes = json.dumps([
+        {"id": 10, "type": "PipeWire:Interface:Node", "info": {"props": {"node.description": "Internal Mic", "media.class": "Audio/Source"}}},
+        {"id": 57, "type": "PipeWire:Interface:Node", "info": {"props": {"node.description": "Built-in Audio Stereo", "media.class": "Audio/Sink"}}},
+        {"id": 90, "type": "PipeWire:Interface:Node", "info": {"props": {"node.description": "UMC1820 Pro", "media.class": "Audio/Sink"}}},
+        {"id": 91, "type": "PipeWire:Interface:Node", "info": {"props": {"node.description": "UMC1820 Pro", "media.class": "Audio/Source"}}},
+    ])
+
+    def fake_runner(command):
+        assert command == ["pw-dump"]
+        return nodes
+
+    adapter = PipeWireAdapter(config=config, runner=fake_runner)
+    devices = adapter.discover_devices()
+
+    assert devices["source_device"] == "Internal Mic"
+    assert "UMC1820 Pro" in devices["source_devices"]
+    assert "UMC1820 Pro" in devices["output_devices"]
+    assert adapter.validate_configured_devices() == {"ok": True, "missing_devices": []}
+
+
 def test_pipewire_adapter_discovers_source_and_output_nodes():
     def fake_runner(command):
+        if command == ["pw-dump"]:
+            return ""
         if command[:3] == ["pw-cli", "ls", "Node"]:
             return '''
                 id 91, type PipeWire:Interface:Node/3

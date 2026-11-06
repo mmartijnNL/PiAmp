@@ -5,14 +5,14 @@ inputs:
       channels: [0, 1]
   - name: "Aux"
     source:
-      device: "UMC1820 Multichannel"
-      channels: [0, 1]
+      device: "UMC1820 Pro"
+      channels: [4, 5]
   - name: "TV"
     source:
-      device: "UMC1820 Multichannel"
+      device: "UMC1820 Pro"
       channels: [2, 3]
 
 zones:
   - name: "Bureau Martijn"
-    device: "UMC1820 Multichannel"
+    device: "UMC1820 Pro"
     channels: [0, 1]

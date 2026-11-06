@@ -240,6 +240,11 @@ def test_pipewire_adapter_removes_stale_links_on_reapply():
     assert ["pw-link", "200", "300"] in commands
     assert ["pw-link", "201", "301"] in commands
 
+    commands.clear()
+    adapter.apply_routes({"Bureau Martijn": {}})
+    assert ["pw-link", "-d", "400", "300"] in commands
+    assert not any(command[0] == "pw-link" and command[1] != "-d" for command in commands)
+
 
 def test_route_manager_routes_input_to_zones_and_mixes(tmp_path):
     manager = RouteManager(state_path=tmp_path / "routes.json")

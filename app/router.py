@@ -9,7 +9,7 @@ from .state_store import StateStore
 
 
 class RouteManager:
-    def __init__(self, config: SystemConfig | None = None, state_path: str | Path | None = None):
+    def __init__(self, config: SystemConfig | None = None, state_path: str | Path | None = None, *, persist_state: bool = True, strict_state: bool = False):
         self._inputs: dict[str, list[str]] = {}
         self._zones: dict[str, dict[str, object]] = {}
         self.state: dict[str, dict[str, float]] = {}
@@ -21,7 +21,7 @@ class RouteManager:
             for zone_def in config.zones:
                 self.add_zone(zone_def.name, zone_def.device, list(zone_def.channels))
 
-        self.state = self.state_store.load()
+        self.state = self.state_store.load(strict=strict_state)
         if config is not None:
             filtered_state: dict[str, dict[str, float]] = {}
 
@@ -38,7 +38,8 @@ class RouteManager:
             for zone_name in self._zones:
                 self.state.setdefault(zone_name, {})
 
-            self.save_state()
+            if persist_state:
+                self.save_state()
 
     def add_input(self, name: str, channels: list[str] | None = None) -> None:
         self._inputs[name] = list(channels or [])

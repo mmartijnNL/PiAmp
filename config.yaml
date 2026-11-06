@@ -15,4 +15,4 @@ inputs:
 zones:
   - name: "Bureau Martijn"
     device: "UMC1820 Pro"
-    channels: [0, 1]
+    channels: [2, 3]

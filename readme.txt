@@ -1,3 +1,10 @@
+Running PiAmp
+Start with ./start_manual.sh or python3 -m app.main.
+PiAmp stays running and checks config.yaml and state/routes.json every second.
+Saved changes are validated and applied without restarting or rewriting either file.
+Invalid edits are reported and are not applied; save corrected files to retry.
+Empty zone route maps disconnect that zone's routes. Deleted or moved zones have
+their old links cleared on reload. Press Ctrl+C to stop.
 
 Step-by-step plan
 Phase 1: Domain model and config

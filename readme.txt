@@ -6,6 +6,12 @@ Invalid edits are reported and are not applied; save corrected files to retry.
 Empty zone route maps disconnect that zone's routes. Deleted or moved zones have
 their old links cleared on reload. Press Ctrl+C to stop.
 
+Terminal audio meter
+Run python3 -m app.meter to show live INPUT/OUTPUT dBFS levels for the
+UMC1820's multichannel capture and playback nodes, refreshed in place in the
+terminal. Requires pw-record and numpy (see requirements.txt). Optional flags:
+--rate, --frames, and --refresh. Press Ctrl+C to stop.
+
 Step-by-step plan
 Phase 1: Domain model and config
 Define the core objects:

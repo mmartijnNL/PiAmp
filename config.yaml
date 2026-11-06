@@ -3,7 +3,7 @@ inputs:
     source:
       device: "Built-in Audio Stereo"
       channels: [0, 1]
-  - name: "Aux"
+  - name: "GameCube"
     source:
       device: "UMC1820 Pro"
       channels: [4, 5]

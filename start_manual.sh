@@ -15,7 +15,8 @@ done
 
 if [[ -n "$TERMINAL" ]]; then
   echo "Opening PiAmp in a visible terminal..."
-  case "$TERMINAL" in
+  TERMINAL_NAME="$(basename "$(readlink -f "$(command -v "$TERMINAL")")")"
+  case "$TERMINAL_NAME" in
     gnome-terminal)
       exec "$TERMINAL" --maximize -- bash -lc "$CMD; $PAUSE_CMD"
       ;;
@@ -26,7 +27,8 @@ if [[ -n "$TERMINAL" ]]; then
       exec "$TERMINAL" --maximize -e "bash -lc '$CMD; $PAUSE_CMD'"
       ;;
     lxterminal)
-      exec "$TERMINAL" --geometry=999x999 -e bash -lc "$CMD; $PAUSE_CMD"
+      # Maximized by a labwc windowRule matching this title (~/.config/labwc/rc.xml).
+      exec "$TERMINAL" --title=PiAmp -e bash -lc "$CMD; $PAUSE_CMD"
       ;;
     xterm|uxterm)
       exec "$TERMINAL" -maximized -e bash -lc "$CMD; $PAUSE_CMD"

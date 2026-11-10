@@ -16,3 +16,6 @@ zones:
   - name: "Bureau Martijn"
     device: "UMC1820 Pro"
     channels: [2, 3]
+  - name: "WC"
+    device: "UMC1820 Pro"
+    channels: [4, 5]

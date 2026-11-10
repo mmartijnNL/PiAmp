@@ -17,10 +17,19 @@ if [[ -n "$TERMINAL" ]]; then
   echo "Opening PiAmp in a visible terminal..."
   case "$TERMINAL" in
     gnome-terminal)
-      exec "$TERMINAL" -- bash -lc "$CMD; $PAUSE_CMD"
+      exec "$TERMINAL" --maximize -- bash -lc "$CMD; $PAUSE_CMD"
       ;;
     konsole)
-      exec "$TERMINAL" --noclose -e bash -lc "$CMD; $PAUSE_CMD"
+      exec "$TERMINAL" --fullscreen --noclose -e bash -lc "$CMD; $PAUSE_CMD"
+      ;;
+    xfce4-terminal|mate-terminal)
+      exec "$TERMINAL" --maximize -e "bash -lc '$CMD; $PAUSE_CMD'"
+      ;;
+    lxterminal)
+      exec "$TERMINAL" --geometry=999x999 -e bash -lc "$CMD; $PAUSE_CMD"
+      ;;
+    xterm|uxterm)
+      exec "$TERMINAL" -maximized -e bash -lc "$CMD; $PAUSE_CMD"
       ;;
     *)
       exec "$TERMINAL" -e bash -lc "$CMD; $PAUSE_CMD"

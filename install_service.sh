@@ -17,33 +17,44 @@ if [[ ! -d "$APP_DIR" ]]; then
   mkdir -p "$APP_DIR"
 fi
 
+# PipeWire runs in the user's session, so the service must run as that user.
+RUN_USER="${SUDO_USER:-rpi}"
+RUN_UID="$(id -u "$RUN_USER")"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 rsync -a --delete "$SCRIPT_DIR/" "$APP_DIR/"
 
 cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=PiAmp audio routing service
-After=network.target sound.target
-Wants=network.target sound.target
+After=network-online.target sound.target user@${RUN_UID}.service
+Wants=network-online.target user@${RUN_UID}.service
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/piamp
+Environment=XDG_RUNTIME_DIR=/run/user/${RUN_UID}
+Environment=PIPEWIRE_RUNTIME_DIR=/run/user/${RUN_UID}
+ExecStartPre=/bin/sleep 5
 ExecStart=/usr/bin/python3 -m app.main --config /opt/piamp/config.yaml --state /opt/piamp/state/routes.json
-Restart=on-failure
+Restart=always
 RestartSec=5
-User=root
-Group=root
+User=${RUN_USER}
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
+chown -R "$RUN_USER" "$APP_DIR"
+# Start the user manager (and PipeWire) at boot without a login.
+loginctl enable-linger "$RUN_USER"
+
 systemctl daemon-reload
 systemctl enable "$SERVICE_NAME"
+systemctl restart "$SERVICE_NAME"
 
 echo
 echo "Installed PiAmp service to $APP_DIR"
 echo "Service file: $SERVICE_FILE"
-echo "To start now: sudo systemctl start $SERVICE_NAME"
+echo "Logs: journalctl -u $SERVICE_NAME -b"
 echo "To check status: sudo systemctl status $SERVICE_NAME"

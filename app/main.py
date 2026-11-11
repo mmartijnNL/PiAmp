@@ -67,7 +67,7 @@ class PiAmpService:
             self.api = AudioAPI(manager, adapter)
             self.log(f"Reloaded config and routes: applied {len(result['applied'])} route(s).")
             return True
-        except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError, yaml.YAMLError) as exc:
+        except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError, RuntimeError, yaml.YAMLError) as exc:
             self.log(f"ERROR: reload failed: {exc}. Waiting for corrected files.")
             return False
 

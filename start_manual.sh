@@ -27,7 +27,9 @@ if [[ -n "$TERMINAL" ]]; then
       exec "$TERMINAL" --maximize -e "bash -lc '$CMD; $PAUSE_CMD'"
       ;;
     lxterminal)
-      # Maximized by a labwc windowRule matching this title (~/.config/labwc/rc.xml).
+      # lxterminal has no --maximize flag; maximizing is done by the Openbox
+      # window rule matching this title, installed by install_service.sh into
+      # ~/.config/openbox/rpd-rc.xml.
       exec "$TERMINAL" --title=PiAmp -e bash -lc "$CMD; $PAUSE_CMD"
       ;;
     xterm|uxterm)

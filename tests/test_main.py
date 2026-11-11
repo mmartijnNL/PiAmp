@@ -78,6 +78,21 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(stop_event.wait.call_count, 3)
         stop_event.wait.assert_called_with(1.0)
 
+    def test_pipewire_command_failure_is_logged_without_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "config.yaml"
+            state_path = Path(directory) / "routes.json"
+            config_path.write_text("inputs: []\nzones: []\n")
+            state_path.write_text("{}")
+            with patch("app.main.PipeWireAdapter") as adapter_class:
+                adapter = adapter_class.return_value
+                adapter.validate_configured_devices.return_value = {"ok": True}
+                adapter.apply_routes.side_effect = [{"applied": []}, RuntimeError("failed to link ports")]
+                service = PiAmpService(str(config_path), str(state_path))
+                self.assertFalse(service.check_for_changes())
+                self.assertIsNone(service.api)
+                self.assertIn("ERROR: reload failed: failed to link ports", service.messages[-1])
+
 
 if __name__ == "__main__":
     unittest.main()

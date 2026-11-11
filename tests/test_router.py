@@ -1,8 +1,36 @@
 import json
 import textwrap
+from unittest.mock import patch
+
+import pytest
 
 from app.pipewire import PipeWireAdapter
 from app.router import RouteManager
+
+
+def graph_runner(fixture, commands):
+    objects = json.loads(fixture)
+
+    def run(command):
+        commands.append(command)
+        if command == ["pw-dump"]:
+            return json.dumps(objects)
+        if command[0] == "pw-link":
+            disconnect = command[1] == "-d"
+            output_port, input_port = map(int, command[2:] if disconnect else command[1:])
+            if disconnect:
+                objects[:] = [
+                    obj for obj in objects
+                    if obj.get("info") != {"output-port-id": output_port, "input-port-id": input_port}
+                ]
+            else:
+                objects.append({
+                    "type": "PipeWire:Interface:Link",
+                    "info": {"output-port-id": output_port, "input-port-id": input_port},
+                })
+        return ""
+
+    return run
 
 
 def test_pipewire_adapter_discovers_pro_audio_nodes_and_validates_all_sources():
@@ -166,13 +194,7 @@ def test_pipewire_adapter_applies_routes_to_live_nodes():
         },
     ])
 
-    def fake_runner(command):
-        commands.append(command)
-        if command == ["pw-dump"]:
-            return pw_dump_fixture
-        return ""
-
-    adapter = PipeWireAdapter(config=config, runner=fake_runner)
+    adapter = PipeWireAdapter(config=config, runner=graph_runner(pw_dump_fixture, commands))
     result = adapter.apply_routes({"Bureau Martijn": {"Pi": 0.0}})
 
     assert result["applied"][0]["input"] == "Pi"
@@ -227,13 +249,7 @@ def test_pipewire_adapter_removes_stale_links_on_reapply():
         },
     ])
 
-    def fake_runner(command):
-        commands.append(command)
-        if command == ["pw-dump"]:
-            return pw_dump_fixture
-        return ""
-
-    adapter = PipeWireAdapter(config=config, runner=fake_runner)
+    adapter = PipeWireAdapter(config=config, runner=graph_runner(pw_dump_fixture, commands))
     adapter.apply_routes({"Bureau Martijn": {"Pi": 0.0}})
 
     assert ["pw-link", "-d", "400", "300"] in commands
@@ -242,8 +258,68 @@ def test_pipewire_adapter_removes_stale_links_on_reapply():
 
     commands.clear()
     adapter.apply_routes({"Bureau Martijn": {}})
-    assert ["pw-link", "-d", "400", "300"] in commands
+    assert ["pw-link", "-d", "200", "300"] in commands
+    assert ["pw-link", "-d", "201", "301"] in commands
     assert not any(command[0] == "pw-link" and command[1] != "-d" for command in commands)
+
+
+def test_shared_sink_preserves_both_zones_on_reapply_and_clears_one_zone():
+    config = type("Cfg", (), {
+        "inputs": [type("Input", (), {"name": "TV", "source": {"device": "UMC", "channels": [0, 1]}})()],
+        "zones": [
+            type("Zone", (), {"name": "Office", "device": "UMC", "channels": [0, 1]})(),
+            type("Zone", (), {"name": "WC", "device": "UMC", "channels": [2, 3]})(),
+        ],
+    })()
+    objects = [
+        {"id": node_id, "type": "PipeWire:Interface:Node",
+         "info": {"props": {"node.description": "UMC", "media.class": media_class}}}
+        for node_id, media_class in ((10, "Audio/Source"), (20, "Audio/Sink"))
+    ]
+    objects.extend(
+        {"id": port_id, "type": "PipeWire:Interface:Port",
+         "info": {"props": {"node.id": node_id, "port.direction": direction, "port.id": channel}}}
+        for node_id, direction, port_id, channel in (
+            (10, "out", 100, 0), (10, "out", 101, 1),
+            (20, "in", 200, 0), (20, "in", 201, 1),
+            (20, "in", 202, 2), (20, "in", 203, 3),
+        )
+    )
+    commands = []
+    runner = graph_runner(json.dumps(objects), commands)
+    adapter = PipeWireAdapter(config=config, runner=runner)
+    state = {"Office": {"TV": 0}, "WC": {"TV": 0}}
+    adapter.apply_routes(state)
+    commands.clear()
+    adapter.apply_routes(state)
+    assert not any(command[0] == "pw-link" for command in commands)
+    assert set(adapter._parse_pw_dump(runner(["pw-dump"]))[1]) == {
+        (100, 200), (101, 201), (100, 202), (101, 203),
+    }
+
+    adapter.apply_routes({"Office": {}, "WC": {"TV": 0}})
+    assert set(adapter._parse_pw_dump(runner(["pw-dump"]))[1]) == {(100, 202), (101, 203)}
+
+    commands.clear()
+    config.inputs[0].source["channels"] = [0, 9]
+    with pytest.raises(ValueError, match="unavailable channel"):
+        adapter.apply_routes(state, dry_run=True)
+    assert commands == [["pw-dump"]]
+
+    config.inputs[0].source["channels"] = [0, 1]
+    snapshot = runner(["pw-dump"])
+    adapter.runner = lambda command: snapshot if command == ["pw-dump"] else ""
+    with pytest.raises(RuntimeError, match="did not retain requested links"):
+        adapter.apply_routes(state)
+
+
+def test_pipewire_command_failure_is_not_reported_as_success():
+    with patch("app.pipewire.subprocess.run") as run:
+        run.return_value.returncode = 1
+        run.return_value.stdout = ""
+        run.return_value.stderr = "failed to link ports"
+        with pytest.raises(RuntimeError, match="pw-link 100 200 failed.*failed to link ports"):
+            PipeWireAdapter._default_runner(["pw-link", "100", "200"])
 
 
 def test_route_manager_routes_input_to_zones_and_mixes(tmp_path):

@@ -16,6 +16,9 @@ class PipeWireAdapter:
     @staticmethod
     def _default_runner(command: Sequence[str]) -> str:
         result = subprocess.run(command, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(f"{' '.join(command)} failed (exit {result.returncode}): {detail}")
         return result.stdout or result.stderr or ""
 
     @staticmethod
@@ -285,6 +288,8 @@ class PipeWireAdapter:
             return (preferred or candidates)[0]
 
         applied: list[dict[str, Any]] = []
+        desired_links: set[tuple[int, int]] = set()
+        managed_port_ids: set[int] = set()
         for zone_name, input_map in route_state.items():
             zone = next((item for item in self.config.zones if item.name == zone_name), None)
             if zone is None:
@@ -294,14 +299,8 @@ class PipeWireAdapter:
             if zone_node is None:
                 raise ValueError(f"zone device not found in PipeWire: {zone.device}")
             zone_channels = list(getattr(zone, "channels", None) or [0, 1])
-            zone_port_ids = set(zone_node["ports"]["in"].values())
+            managed_port_ids.update(zone_node["ports"]["in"].values())
 
-            # Resolve every input routed to this zone and the exact port pairs
-            # it needs *before* touching any links, so multiple inputs mixed
-            # into the same zone (intentionally) don't get disconnected by
-            # each other in the reconciliation step below.
-            desired_links: set[tuple[int, int]] = set()
-            per_input: list[tuple[str, float, str, dict[str, Any], list[tuple[int, int]]]] = []
             for input_name, gain_db in input_map.items():
                 input_def = next((item for item in self.config.inputs if item.name == input_name), None)
                 if input_def is None:
@@ -320,39 +319,12 @@ class PipeWireAdapter:
                     src_port = source_node["ports"]["out"].get(int(in_channel))
                     dst_port = zone_node["ports"]["in"].get(int(out_channel))
                     if src_port is None or dst_port is None:
-                        continue
+                        raise ValueError(
+                            f"unavailable channel for {input_name} -> {zone_name}: "
+                            f"{source_name} output {in_channel}, {zone.device} input {out_channel}"
+                        )
                     link_pairs.append((src_port, dst_port))
                     desired_links.add((src_port, dst_port))
-
-                per_input.append((input_name, float(gain_db), source_name, source_node, link_pairs))
-
-            # Reconcile: remove any existing link feeding one of this zone's
-            # ports that isn't part of the current desired set. Without this,
-            # re-applying routes after changing a zone's configured channels
-            # or an input's source device leaves old links in place (e.g. a
-            # previous channel assignment keeps leaking audio to an output
-            # that's no longer meant to carry it).
-            if not dry_run:
-                for out_port, in_port in existing_links:
-                    if in_port in zone_port_ids and (out_port, in_port) not in desired_links:
-                        self.runner(["pw-link", "-d", str(out_port), str(in_port)])
-
-            for input_name, gain_db, source_name, source_node, link_pairs in per_input:
-                links: list[dict[str, str]] = []
-                for src_port, dst_port in link_pairs:
-                    if not dry_run and (src_port, dst_port) not in existing_links:
-                        self.runner(["pw-link", str(src_port), str(dst_port)])
-                    links.append({"source_port": str(src_port), "sink_port": str(dst_port)})
-
-                # PipeWire has no native per-link gain; the closest native
-                # control is the zone sink's own volume. This means gain is
-                # shared across every input currently routed to this zone,
-                # not applied per-route. Clamp to unity (1.0 = 0 dB) so a
-                # misconfigured positive gain can't drive the amp past full
-                # volume unexpectedly.
-                linear_gain = max(0.0, min(1.0, 10 ** (float(gain_db) / 20)))
-                if not dry_run:
-                    self.runner(["wpctl", "set-volume", str(zone_node["node_id"]), f"{linear_gain:.3f}"])
 
                 applied.append({
                     "input": input_name,
@@ -361,9 +333,32 @@ class PipeWireAdapter:
                     "sink": str(zone.device),
                     "source_id": str(source_node["node_id"]),
                     "sink_id": str(zone_node["node_id"]),
-                    "links": links,
+                    "links": [
+                        {"source_port": str(src_port), "sink_port": str(dst_port)}
+                        for src_port, dst_port in link_pairs
+                    ],
                     "gain_db": float(gain_db),
                 })
+
+        if not dry_run:
+            # Zones can share a multichannel sink. Reconcile their combined
+            # plan so one zone never deletes another zone's desired links.
+            for out_port, in_port in existing_links:
+                if in_port in managed_port_ids and (out_port, in_port) not in desired_links:
+                    self.runner(["pw-link", "-d", str(out_port), str(in_port)])
+            for src_port, dst_port in sorted(desired_links - set(existing_links)):
+                self.runner(["pw-link", str(src_port), str(dst_port)])
+
+            for route in applied:
+                # Native gain is sink-wide, not per-link; clamp to unity.
+                linear_gain = max(0.0, min(1.0, 10 ** (route["gain_db"] / 20)))
+                self.runner(["wpctl", "set-volume", route["sink_id"], f"{linear_gain:.3f}"])
+
+            if desired_links:
+                _, live_links = self._parse_pw_dump(self.runner(["pw-dump"]))
+                missing_links = desired_links - set(live_links)
+                if missing_links:
+                    raise RuntimeError(f"PipeWire did not retain requested links: {sorted(missing_links)}")
 
         return {"applied": applied, "dry_run": dry_run}
 

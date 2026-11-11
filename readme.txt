@@ -5,6 +5,9 @@ Saved changes are validated and applied without restarting or rewriting either f
 Invalid edits are reported and are not applied; save corrected files to retry.
 Empty zone route maps disconnect that zone's routes. Deleted or moved zones have
 their old links cleared on reload. Press Ctrl+C to stop.
+Zones sharing a multichannel device are reconciled together, preserving each
+zone's connections on reapply. Missing channels, failed PipeWire commands, and
+links that do not persist are reported as errors rather than successful routes.
 
 Terminal audio meter
 Run python3 -m app.meter to show live INPUT/OUTPUT dBFS levels for the

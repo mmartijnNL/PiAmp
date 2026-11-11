@@ -159,7 +159,7 @@ class TerminalMeter:
                 column.append("Waiting for audio...")
             else:
                 for index, level in enumerate(values):
-                    column.append(f"{index + 1:02} {level:6.1f} dB |{render_bar(float(level), bar_width):<{bar_width}}|")
+                    column.append(f"{index + 1:02} {level:6.0f} dB |{render_bar(float(level), bar_width):<{bar_width}}|")
             columns.append(column)
 
         widths = [max(len(line) for line in column) for column in columns]

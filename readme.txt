@@ -12,7 +12,8 @@ links that do not persist are reported as errors rather than successful routes.
 Terminal audio meter
 Run python3 -m app.meter to show live INPUT/OUTPUT dBFS levels for the
 UMC1820's multichannel capture and playback nodes, refreshed in place in the
-terminal. Requires pw-record and numpy (see requirements.txt). Optional flags:
+terminal. Numeric levels are rounded to whole dBFS, without decimals.
+Requires pw-record and numpy (see requirements.txt). Optional flags:
 --rate, --frames, and --refresh. Press Ctrl+C to stop.
 
 Step-by-step plan

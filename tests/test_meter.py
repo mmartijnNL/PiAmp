@@ -70,6 +70,18 @@ class StreamReaderTests(unittest.TestCase):
 
 
 class TerminalMeterTests(unittest.TestCase):
+    def test_readout_rounds_levels_to_whole_decibels(self):
+        spec = StreamSpec(name="TEST", target="dummy", channels=3)
+        meter = TerminalMeter(streams=[spec])
+        meter.levels["TEST"] = np.array([-12.3, -12.7, 0.0])
+
+        lines = meter.render_lines()
+
+        self.assertIn("01    -12 dB |", lines[1])
+        self.assertIn("02    -13 dB |", lines[2])
+        self.assertIn("03      0 dB |", lines[3])
+        self.assertFalse(any("." in line for line in lines))
+
     def _fake_proc(self, stdout: io.BytesIO) -> Mock:
         proc = Mock()
         proc.stdout = stdout

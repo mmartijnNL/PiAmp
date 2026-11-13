@@ -1,20 +1,26 @@
 from __future__ import annotations
 
 import argparse
+import json
 import queue
+import re
 import shutil
 import subprocess
 import sys
 import threading
-from dataclasses import dataclass
-from typing import BinaryIO, Callable, Sequence
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import Any, BinaryIO, Callable, Iterable, Sequence
 
 import numpy as np
+
+from .models import SystemConfig
 
 BYTES_PER_SAMPLE = 4  # pw-record --format f32
 MIN_LEVEL_DB = -60.0
 MAX_LEVEL_DB = 0.0
 BAR_WIDTH = 50
+CPU_TEMP_PATH = Path("/sys/class/thermal/thermal_zone0/temp")
 
 
 @dataclass(frozen=True)
@@ -23,6 +29,7 @@ class StreamSpec:
     target: str
     channels: int
     properties: str | None = None
+    channel_map: tuple[str, ...] = ()
 
     def command(self, rate: int, frames: int) -> list[str]:
         command = [
@@ -33,29 +40,161 @@ class StreamSpec:
             "--format", "f32",
             "--raw",
         ]
+        if self.channel_map:
+            command += ["--channel-map", ",".join(self.channel_map)]
         if self.properties:
             command += ["--properties", self.properties]
         command.append("-")
         return command
 
 
-# Defaults match the UMC1820's multichannel capture/playback nodes: 10 input
-# channels (8 analog in + S/PDIF) and 12 output channels (8 analog out + 4
-# monitor sends). `stream.capture.sink = true` makes pw-record tap the
-# sink's monitor ports instead of trying to capture a playback stream.
-DEFAULT_STREAMS: tuple[StreamSpec, ...] = (
-    StreamSpec(
-        name="INPUT",
-        target="alsa_input.usb-BEHRINGER_UMC1820_7A122C9D-00.multichannel-input",
-        channels=10,
-    ),
-    StreamSpec(
-        name="OUTPUT",
-        target="alsa_output.usb-BEHRINGER_UMC1820_7A122C9D-00.multichannel-output",
-        channels=12,
-        properties="{ stream.capture.sink = true }",
-    ),
-)
+@dataclass(frozen=True)
+class MeterEntry:
+    """One configured input or zone, shown as a device name plus one bar per
+    configured channel (left/right), fed from a capture `StreamSpec`."""
+
+    label: str
+    side: str  # "input" or "zone"
+    stream_name: str
+    indices: tuple[int, ...]
+
+
+def _normalize_device_name(name: str) -> str:
+    return re.sub(r"\s+", " ", name or "").strip().lower()
+
+
+def _source_device(source: str | dict[str, Any]) -> str:
+    source_cfg = source if isinstance(source, dict) else {"device": source}
+    return str(source_cfg.get("device", source or "unknown-source"))
+
+
+def _source_channels(source: str | dict[str, Any], fallback: list[Any]) -> list[int]:
+    source_cfg = source if isinstance(source, dict) else {}
+    raw_channels = source_cfg.get("channels", fallback) or []
+    return [int(value) for value in raw_channels]
+
+
+def plan_streams(
+    config: SystemConfig,
+    source_devices: Iterable[str] = (),
+    sink_devices: Iterable[str] = (),
+) -> tuple[list[StreamSpec], list[MeterEntry]]:
+    """Build one capture `StreamSpec` per distinct device used by the
+    configured inputs/zones (grouping entries that share a device), plus the
+    `MeterEntry` list describing how to render each configured input/zone
+    from those streams.
+
+    A device is captured via its sink monitor (`stream.capture.sink = true`)
+    when it is only known as a sink (e.g. a "Built-in Audio Stereo" output
+    being monitored as an input source); zones are always sink monitors,
+    since a zone is by definition a playback device.
+    """
+    sources = {_normalize_device_name(name) for name in source_devices}
+    sinks = {_normalize_device_name(name) for name in sink_devices}
+
+    # Keyed by (normalized device name, is_sink_capture); tracks the display
+    # name and the highest configured channel index so the stream requests
+    # just enough channels to cover every entry sharing that device.
+    plans: dict[tuple[str, bool], dict[str, Any]] = {}
+    pending: list[tuple[MeterEntry, tuple[str, bool]]] = []
+
+    def register(device_name: str, channels: list[int], is_sink: bool) -> tuple[str, bool]:
+        normalized = _normalize_device_name(device_name)
+        key = (normalized, is_sink)
+        plan = plans.setdefault(key, {"device": device_name, "max_index": -1})
+        if channels:
+            plan["max_index"] = max(plan["max_index"], max(channels))
+        return key
+
+    for input_def in config.inputs:
+        device_name = _source_device(input_def.source)
+        channels = _source_channels(input_def.source, list(input_def.channels))
+        normalized = _normalize_device_name(device_name)
+        is_sink_capture = normalized in sinks and normalized not in sources
+        key = register(device_name, channels, is_sink_capture)
+        pending.append((MeterEntry(label=input_def.name, side="input", stream_name="", indices=tuple(channels)), key))
+
+    for zone in config.zones:
+        device_name = str(zone.device)
+        channels = [int(value) for value in zone.channels]
+        key = register(device_name, channels, True)
+        pending.append((MeterEntry(label=zone.name, side="zone", stream_name="", indices=tuple(channels)), key))
+
+    streams: list[StreamSpec] = []
+    stream_names: dict[tuple[str, bool], str] = {}
+    for index, (key, plan) in enumerate(plans.items()):
+        _normalized, is_sink_capture = key
+        stream_name = f"stream{index}"
+        stream_names[key] = stream_name
+        streams.append(StreamSpec(
+            name=stream_name,
+            target=plan["device"],
+            channels=max(plan["max_index"] + 1, 2),
+            properties="{ stream.capture.sink = true }" if is_sink_capture else None,
+        ))
+
+    entries = [replace(entry, stream_name=stream_names[key]) for entry, key in pending]
+    return streams, entries
+
+
+def resolve_streams(streams: Sequence[StreamSpec], output: str) -> list[StreamSpec]:
+    """Resolve friendly names to exact nodes and capture their native channels."""
+    nodes = [
+        obj["info"]["props"]
+        for obj in json.loads(output)
+        if obj.get("type") == "PipeWire:Interface:Node"
+        and (obj.get("info") or {}).get("props", {}).get("media.class") in {"Audio/Source", "Audio/Sink"}
+    ]
+    resolved: list[StreamSpec] = []
+    for spec in streams:
+        media_class = "Audio/Sink" if spec.properties else "Audio/Source"
+        candidates = [
+            node for node in nodes
+            if node["media.class"] == media_class
+            and _normalize_device_name(spec.target) in {
+                _normalize_device_name(str(node.get("node.name", ""))),
+                _normalize_device_name(str(node.get("node.description", ""))),
+            }
+        ]
+        if not candidates:
+            raise ValueError(f"meter device not found in PipeWire: {spec.target} ({media_class})")
+        # Match the routing adapter's first matching node when descriptions repeat.
+        node = candidates[0]
+        positions = node.get("audio.position", [])
+        if isinstance(positions, str):
+            positions = positions.strip("[]").replace(",", " ").split()
+        channel_map = tuple(positions)
+        if not channel_map or len(channel_map) != int(node.get("audio.channels", 0)):
+            raise ValueError(f"missing native channel map for meter device: {spec.target}")
+        if spec.channels > len(channel_map):
+            raise ValueError(f"unavailable configured channel for meter device: {spec.target}")
+        properties = "{ stream.dont-remix = true"
+        if media_class == "Audio/Sink":
+            properties += " stream.capture.sink = true"
+        properties += " }"
+        resolved.append(replace(
+            spec, target=node["node.name"], channels=len(channel_map),
+            channel_map=channel_map, properties=properties,
+        ))
+    return resolved
+
+
+def _bar_labels(count: int) -> list[str]:
+    if count <= 0:
+        return []
+    if count == 1:
+        return ["M"]
+    labels = ["L", "R"]
+    labels.extend(str(n) for n in range(3, count + 1))
+    return labels[:count]
+
+
+def read_cpu_temp_celsius(path: Path = CPU_TEMP_PATH) -> float | None:
+    """Read the SoC temperature from sysfs, in degrees Celsius."""
+    try:
+        return int(path.read_text().strip()) / 1000.0
+    except (OSError, ValueError):
+        return None
 
 
 def levels_from_frame(raw: bytes, channels: int) -> np.ndarray:
@@ -111,28 +250,48 @@ class StreamReader:
 
 
 class TerminalMeter:
-    """Live UMC1820 input/output level meter rendered to the terminal."""
+    """Live per-input/per-zone level meter rendered to the terminal.
+
+    Configured inputs are shown in a left column and configured zones in a
+    right column, each as a device name followed by one bar per configured
+    channel (L/R). A fixed-size status block (never growing) follows with
+    the CPU temperature and whatever `footer` reports."""
 
     def __init__(
         self,
-        streams: Sequence[StreamSpec] = DEFAULT_STREAMS,
+        config: SystemConfig | None = None,
+        *,
+        source_devices: Iterable[str] = (),
+        sink_devices: Iterable[str] = (),
+        streams: Sequence[StreamSpec] | None = None,
+        entries: Sequence[MeterEntry] | None = None,
         rate: int = 48000,
         frames: int = 4800,
         refresh: float = 0.1,
         popen: Callable[..., subprocess.Popen] = subprocess.Popen,
         footer: Callable[[], Sequence[str]] | None = None,
+        cpu_temp_path: Path = CPU_TEMP_PATH,
     ):
+        if streams is None and entries is None:
+            streams, entries = plan_streams(config or SystemConfig(), source_devices, sink_devices)
+        self.config = config
         self.footer = footer
-        self.streams = list(streams)
+        self.streams = list(streams or [])
+        self.entries = list(entries or [])
         self.rate = rate
         self.frames = frames
         self.refresh = refresh
         self.popen = popen
+        self.cpu_temp_path = cpu_temp_path
         self.processes: list[subprocess.Popen] = []
         self.queues: dict[str, "queue.Queue[np.ndarray]"] = {}
         self.levels: dict[str, np.ndarray | None] = {spec.name: None for spec in self.streams}
 
     def start(self) -> None:
+        if self.config is not None and self.streams:
+            from .pipewire import PipeWireAdapter
+
+            self.streams = resolve_streams(self.streams, PipeWireAdapter._default_runner(["pw-dump"]))
         for spec in self.streams:
             proc = self.popen(spec.command(self.rate, self.frames), stdout=subprocess.PIPE, bufsize=0)
             self.processes.append(proc)
@@ -148,29 +307,45 @@ class TerminalMeter:
             except queue.Empty:
                 pass
 
-    def render_lines(self, bar_width: int = 20) -> list[str]:
-        """Lay streams out side by side so the frame stays short enough to
-        fit the terminal and be redrawn in place."""
-        columns: list[list[str]] = []
-        for spec in self.streams:
-            column = [f"--- UMC1820 {spec.name} ---"]
-            values = self.levels[spec.name]
-            if values is None:
-                column.append("Waiting for audio...")
-            else:
-                for index, level in enumerate(values):
-                    column.append(f"{index + 1:02} {level:6.0f} dB |{render_bar(float(level), bar_width):<{bar_width}}|")
-            columns.append(column)
+    def _render_entry_column(self, side: str, bar_width: int) -> list[str]:
+        column: list[str] = []
+        for entry in self.entries:
+            if entry.side != side:
+                continue
+            column.append(entry.label)
+            if not entry.indices:
+                column.append("(no channels configured)")
+                continue
+            values = self.levels.get(entry.stream_name)
+            for bar_label, channel_index in zip(_bar_labels(len(entry.indices)), entry.indices):
+                if values is None:
+                    column.append(f"{bar_label} Waiting for audio...")
+                    continue
+                if channel_index >= len(values):
+                    column.append(f"{bar_label}    -- dB |{'':<{bar_width}}|")
+                    continue
+                level = float(values[channel_index])
+                column.append(f"{bar_label} {level:6.0f} dB |{render_bar(level, bar_width):<{bar_width}}|")
+        return column
 
-        widths = [max(len(line) for line in column) for column in columns]
-        height = max(len(column) for column in columns)
+    def render_lines(self, bar_width: int = 20) -> list[str]:
+        """Lay the input column and zone column side by side, followed by a
+        fixed-size status block, so the frame stays short enough to fit the
+        terminal and be redrawn in place without growing over time."""
+        columns = [self._render_entry_column("input", bar_width), self._render_entry_column("zone", bar_width)]
+
+        widths = [max((len(line) for line in column), default=0) for column in columns]
+        height = max((len(column) for column in columns), default=0)
         lines = []
         for row in range(height):
             cells = [(column[row] if row < len(column) else "").ljust(width) for column, width in zip(columns, widths)]
             lines.append("   ".join(cells).rstrip())
+
+        lines.append("")
+        lines.append("--- PiAmp ---")
+        cpu_temp = read_cpu_temp_celsius(self.cpu_temp_path)
+        lines.append(f"CPU temp: {cpu_temp:.1f}\u00b0C" if cpu_temp is not None else "CPU temp: unavailable")
         if self.footer is not None:
-            lines.append("")
-            lines.append("--- PiAmp ---")
             lines.extend(self.footer())
         return lines
 
@@ -206,6 +381,7 @@ class TerminalMeter:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="PiAmp terminal audio level meter")
+    parser.add_argument("--config", default="config.yaml", help="Path to YAML config")
     parser.add_argument("--rate", type=int, default=48000, help="Sample rate to request from pw-record")
     parser.add_argument("--frames", type=int, default=4800, help="Frames per analysis block")
     parser.add_argument("--refresh", type=float, default=0.1, help="Screen refresh interval in seconds")
@@ -214,7 +390,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
-    meter = TerminalMeter(rate=args.rate, frames=args.frames, refresh=args.refresh)
+
+    from .config import load_config
+    from .pipewire import PipeWireAdapter
+
+    config = load_config(args.config)
+    devices = PipeWireAdapter(config=config).discover_devices()
+    meter = TerminalMeter(
+        config=config,
+        source_devices=devices.get("source_devices", []),
+        sink_devices=devices.get("output_devices", []),
+        rate=args.rate,
+        frames=args.frames,
+        refresh=args.refresh,
+    )
     try:
         meter.run()
     except KeyboardInterrupt:

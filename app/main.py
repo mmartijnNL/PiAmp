@@ -71,17 +71,37 @@ class PiAmpService:
             self.log(f"ERROR: reload failed: {exc}. Waiting for corrected files.")
             return False
 
+    def _status_lines(self) -> list[str]:
+        """Fixed-size status block: unlike `self.messages`, this never grows
+        on screen, it always reports the current route count and the most
+        recent reload/error message in the same two lines."""
+        route_count = sum(len(routes) for routes in self.api.route_manager.state.values()) if self.api else 0
+        last_message = self.messages[-1] if self.messages else "Waiting for first reload..."
+        return [f"Routes active: {route_count}", f"Last: {last_message}"]
+
     def start_meter(self, stop_event: Event) -> None:
-        meter = TerminalMeter(footer=lambda: list(self.messages))
-
         def target() -> None:
-            try:
-                meter.run(stop_event)
-            except Exception as exc:
-                self.meter_active = False
-                self.log(f"ERROR: audio meter stopped: {exc}")
+            # Config/device discovery can fail transiently (e.g. an in-progress
+            # edit or a device that isn't up yet), so retry on the same 1s
+            # cadence as the route reload loop instead of giving up for good.
+            while not stop_event.is_set():
+                try:
+                    config = load_config(self.config_path)
+                    devices = PipeWireAdapter(config=config).discover_devices()
+                    meter = TerminalMeter(
+                        config=config,
+                        source_devices=devices.get("source_devices", []),
+                        sink_devices=devices.get("output_devices", []),
+                        footer=self._status_lines,
+                    )
+                    self.meter_active = True
+                    meter.run(stop_event)
+                    return
+                except Exception as exc:
+                    self.meter_active = False
+                    self.log(f"ERROR: audio meter stopped: {exc}")
+                    stop_event.wait(1.0)
 
-        self.meter_active = True
         threading.Thread(target=target, daemon=True).start()
 
     def run(self, stop_event: Event | None = None) -> None:

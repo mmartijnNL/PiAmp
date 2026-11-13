@@ -22,11 +22,20 @@ affects other windows in that session and lasts until logout. To restore the
 usual 10-minute timeout manually, run: xset s 600 +dpms
 Wayland power-saving settings are unchanged. Failures are printed as warnings.
 
-Run python3 -m app.meter to show live INPUT/OUTPUT dBFS levels for the
-UMC1820's multichannel capture and playback nodes, refreshed in place in the
-terminal. Numeric levels are rounded to whole dBFS, without decimals.
+Run python3 -m app.meter (or start app.main without --no-meter) to show live
+dBFS levels for every configured input (left column) and zone (right
+column), refreshed in place in the terminal. Each entry shows its device
+name without decorative dashes, followed by one bar per configured channel
+(L/R); channels not listed
+in config.yaml are never shown. Numeric levels are rounded to whole dBFS,
+without decimals. A fixed-size status block below the columns always shows
+the CPU temperature and the active route count/last status message, rather
+than growing as events happen.
+Capture uses exact PipeWire node names and native channel maps, without
+remixing, so configured channel indices measure the corresponding hardware
+channels rather than an automatically selected stereo mix.
 Requires pw-record and numpy (see requirements.txt). Optional flags:
---rate, --frames, and --refresh. Press Ctrl+C to stop.
+--config, --rate, --frames, and --refresh. Press Ctrl+C to stop.
 
 Step-by-step plan
 Phase 1: Domain model and config

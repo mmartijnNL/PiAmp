@@ -5,6 +5,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CMD="cd \"$SCRIPT_DIR\" && /usr/bin/python3 -m app.main --config config.yaml --state state/routes.json"
 PAUSE_CMD="echo; echo 'Press Enter to close this window...'; read -r -p ''"
 
+if [[ -n "${DISPLAY:-}" && "${XDG_SESSION_TYPE:-}" != "wayland" ]]; then
+  if command -v xset >/dev/null 2>&1; then
+    if ! xset s off -dpms; then
+      echo "WARNING: Could not disable display blanking/power saving." >&2
+    fi
+  else
+    echo "WARNING: xset is unavailable; display blanking/power saving is unchanged." >&2
+  fi
+fi
+
 TERMINAL=""
 for candidate in x-terminal-emulator gnome-terminal konsole xfce4-terminal mate-terminal lxterminal terminator uxterm xterm; do
   if command -v "$candidate" >/dev/null 2>&1; then

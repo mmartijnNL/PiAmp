@@ -9,7 +9,19 @@ Zones sharing a multichannel device are reconciled together, preserving each
 zone's connections on reapply. Missing channels, failed PipeWire commands, and
 links that do not persist are reported as errors rather than successful routes.
 
+Desktop autostart
+install_service.sh installs a desktop autostart entry, not a headless service.
+It takes effect on the next desktop login. Bare Openbox sessions also require
+PyXDG to process desktop autostart entries. If openbox-xdg-autostart reports
+"requires PyXDG to be installed", run: sudo apt install python3-xdg
+
 Terminal audio meter
+On X11, start_manual.sh disables screen blanking and display power saving for
+the current desktop session, so an idle PiAmp display stays visible. This also
+affects other windows in that session and lasts until logout. To restore the
+usual 10-minute timeout manually, run: xset s 600 +dpms
+Wayland power-saving settings are unchanged. Failures are printed as warnings.
+
 Run python3 -m app.meter to show live INPUT/OUTPUT dBFS levels for the
 UMC1820's multichannel capture and playback nodes, refreshed in place in the
 terminal. Numeric levels are rounded to whole dBFS, without decimals.

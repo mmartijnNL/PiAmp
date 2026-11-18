@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import re
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -139,6 +142,11 @@ class PipeWireAdapter:
                 "name": props.get("node.description") or props.get("node.name") or "",
                 "media_class": media_class,
                 "ports": {"in": {}, "out": {}},
+                "gain_zone": props.get("piamp.gain.zone"),
+                "channel_volumes": next(
+                    (param["channelVolumes"] for param in (obj.get("info") or {}).get("params", {}).get("Props", [])
+                     if "channelVolumes" in param), None
+                ),
             }
 
         for obj in objects:
@@ -272,6 +280,33 @@ class PipeWireAdapter:
             "missing_devices": sorted(set(missing)),
         }
 
+    @staticmethod
+    def _gain_zone(zone_name: str) -> str:
+        return hashlib.sha256(zone_name.encode()).hexdigest()
+
+    @staticmethod
+    def _gain_name(zone_name: str, input_name: str) -> str:
+        key = json.dumps([zone_name, input_name]).encode()
+        return "piamp-route-" + hashlib.sha256(key).hexdigest()
+
+    def _create_gain_node(self, name: str, zone: str, channels: int) -> dict[str, Any]:
+        positions = " ".join(f"AUX{index}" for index in range(channels))
+        self.runner(["pw-cli", "create-node", "adapter",
+                     "{ factory.name = support.null-audio-sink "
+                     f"node.name = {name} node.description = {name} "
+                     f"piamp.gain.zone = {self._gain_zone(zone)} "
+                     f"audio.position = [ {positions} ] "
+                     "media.class = Audio/Sink object.linger = true "
+                     "node.virtual = true priority.session = 0 node.autoconnect = false "
+                     "monitor.channel-volumes = true }"])
+        for _ in range(40):
+            live_nodes, _ = self._parse_pw_dump(self.runner(["pw-dump"]))
+            node = next((node for node in live_nodes.values() if node["name"] == name), None)
+            if node is not None and len(node["ports"]["in"]) == channels and len(node["ports"]["out"]) == channels:
+                return node
+            time.sleep(0.05)
+        raise RuntimeError(f"PipeWire gain stage did not become ready: {name}")
+
     def apply_routes(self, route_state: dict[str, dict[str, float]], dry_run: bool = False) -> dict[str, Any]:
         if self.config is None:
             return {"applied": []}
@@ -305,6 +340,9 @@ class PipeWireAdapter:
             managed_port_ids.update(zone_node["ports"]["in"].values())
 
             for input_name, gain_db in input_map.items():
+                gain_db = float(gain_db)
+                if not math.isfinite(gain_db) or gain_db > 20:
+                    raise ValueError("route gains must be finite and at most +20 dB")
                 input_def = next((item for item in self.config.inputs if item.name == input_name), None)
                 if input_def is None:
                     continue
@@ -343,6 +381,44 @@ class PipeWireAdapter:
                 })
 
         if not dry_run:
+            managed_zones = {self._gain_zone(zone) for zone in route_state}
+            old_gain_nodes = [node for node in nodes.values() if node["gain_zone"] in managed_zones]
+            for node in old_gain_nodes:
+                managed_port_ids.update(node["ports"]["in"].values())
+
+            active_gain_names: set[str] = set()
+            gain_settings: dict[int, tuple[int, float]] = {}
+            # Hardware sink volume is shared; apply route gain before mixing.
+            for route in applied:
+                if route["gain_db"] == 0:
+                    continue
+                name = self._gain_name(route["zone"], route["input"])
+                pairs = [(int(link["source_port"]), int(link["sink_port"])) for link in route["links"]]
+                stage = next((node for node in nodes.values() if node["name"] == name), None)
+                if stage is None or len(stage["ports"]["in"]) != len(pairs) or len(stage["ports"]["out"]) != len(pairs):
+                    if stage is not None:
+                        self.runner(["pw-cli", "destroy", str(stage["node_id"])])
+                        ports = set(stage["ports"]["in"].values()) | set(stage["ports"]["out"].values())
+                        existing_links = [(src, dst) for src, dst in existing_links if src not in ports and dst not in ports]
+                    stage = self._create_gain_node(name, route["zone"], len(pairs))
+                active_gain_names.add(name)
+                linear_gain = 10 ** (route["gain_db"] / 20)
+                volumes = " ".join(f"{linear_gain:.12g}" for _ in pairs)
+                self.runner(["pw-cli", "set-param", str(stage["node_id"]), "Props",
+                             f"{{ volume = 1.0 mute = false channelVolumes = [ {volumes} ] }}"])
+                gain_settings[stage["node_id"]] = (len(pairs), linear_gain)
+                desired_links.difference_update(pairs)
+                stage_links = []
+                for channel, (source_port, sink_port) in enumerate(pairs):
+                    stage_links.extend([
+                        (source_port, stage["ports"]["in"][channel]),
+                        (stage["ports"]["out"][channel], sink_port),
+                    ])
+                desired_links.update(stage_links)
+                route["links"] = [
+                    {"source_port": str(src), "sink_port": str(dst)} for src, dst in stage_links
+                ]
+
             # Zones can share a multichannel sink. Reconcile their combined
             # plan so one zone never deletes another zone's desired links.
             for out_port, in_port in existing_links:
@@ -351,16 +427,18 @@ class PipeWireAdapter:
             for src_port, dst_port in sorted(desired_links - set(existing_links)):
                 self.runner(["pw-link", str(src_port), str(dst_port)])
 
-            for route in applied:
-                # Native gain is sink-wide, not per-link; clamp to unity.
-                linear_gain = max(0.0, min(1.0, 10 ** (route["gain_db"] / 20)))
-                self.runner(["wpctl", "set-volume", route["sink_id"], f"{linear_gain:.3f}"])
-
             if desired_links:
-                _, live_links = self._parse_pw_dump(self.runner(["pw-dump"]))
+                live_nodes, live_links = self._parse_pw_dump(self.runner(["pw-dump"]))
                 missing_links = desired_links - set(live_links)
                 if missing_links:
                     raise RuntimeError(f"PipeWire did not retain requested links: {sorted(missing_links)}")
+                for node_id, (channels, gain) in gain_settings.items():
+                    actual = live_nodes.get(node_id, {}).get("channel_volumes") or []
+                    if len(actual) != channels or not all(math.isclose(value, gain, rel_tol=1e-4, abs_tol=1e-12) for value in actual):
+                        raise RuntimeError(f"PipeWire did not retain requested gain for node {node_id}")
+            for node in old_gain_nodes:
+                if node["name"] not in active_gain_names:
+                    self.runner(["pw-cli", "destroy", str(node["node_id"])])
 
         return {"applied": applied, "dry_run": dry_run}
 

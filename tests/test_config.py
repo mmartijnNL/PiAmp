@@ -3,8 +3,19 @@ import pytest
 from app.config import load_config
 
 
-def test_load_config_builds_input_and_zone_models():
-    config = load_config("config.yaml")
+def test_load_config_builds_input_and_zone_models(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("""
+inputs:
+  - name: Pi
+  - name: Aux
+  - name: TV
+zones:
+  - name: Bureau Martijn
+    device: UMC1820 Pro
+    channels: [0, 1]
+""")
+    config = load_config(config_path)
 
     assert [i.name for i in config.inputs] == ["Pi", "Aux", "TV"]
     assert [z.name for z in config.zones] == ["Bureau Martijn"]

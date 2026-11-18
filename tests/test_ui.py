@@ -9,11 +9,11 @@ from unittest.mock import Mock
 
 import numpy as np
 
-from app.meter import (
+from app.ui import (
     MeterEntry,
     StreamReader,
     StreamSpec,
-    TerminalMeter,
+    TerminalUI,
     levels_from_frame,
     plan_streams,
     read_cpu_temp_celsius,
@@ -145,7 +145,7 @@ class ResolveStreamsTests(unittest.TestCase):
         samples = [[0.0, 0.0, 0.5, 0.25, 1.0, 0.125, 0.0, 0.0, 0.0, 0.0]] * 2
         levels_queue = queue.Queue(maxsize=1)
         StreamReader(spec, io.BytesIO(_pcm_bytes(samples)), 2, levels_queue).run()
-        meter = TerminalMeter(streams=resolved, entries=entries)
+        meter = TerminalUI(streams=resolved, entries=entries)
         meter.levels[spec.name] = levels_queue.get_nowait()
         lines = meter._render_entry_column("input", 20)
         self.assertEqual(lines[3], "")
@@ -204,11 +204,11 @@ class StreamReaderTests(unittest.TestCase):
         self.assertEqual(level_queue.get_nowait(), -5.0)
 
 
-class TerminalMeterTests(unittest.TestCase):
+class TerminalUITests(unittest.TestCase):
     def test_readout_rounds_levels_to_whole_decibels(self):
         spec = StreamSpec(name="TEST", target="dummy", channels=3)
         entry = MeterEntry(label="Pi", side="input", stream_name="TEST", indices=(0, 1))
-        meter = TerminalMeter(streams=[spec], entries=[entry])
+        meter = TerminalUI(streams=[spec], entries=[entry])
         meter.levels["TEST"] = np.array([-12.3, -12.7, 0.0])
 
         lines = meter.render_lines(bar_width=10)
@@ -225,7 +225,7 @@ class TerminalMeterTests(unittest.TestCase):
             MeterEntry(label="TV", side="input", stream_name="S", indices=(2, 3)),
             MeterEntry(label="Bureau Martijn", side="zone", stream_name="S", indices=(4, 5)),
         ]
-        meter = TerminalMeter(streams=[spec], entries=entries)
+        meter = TerminalUI(streams=[spec], entries=entries)
         meter.levels["S"] = np.array([-60.0, -60.0, -10.0, -20.0, -30.0, -40.0])
 
         header_line = meter.render_lines()[0]
@@ -239,18 +239,21 @@ class TerminalMeterTests(unittest.TestCase):
             self.assertIn(f"{level:4.0f} dB", joined)
         self.assertNotIn(f"{-60:4.0f} dB", joined)
 
-    def test_status_block_stays_fixed_size_regardless_of_message_history(self):
+    def test_status_block_shows_active_errors_and_clears_resolved_errors(self):
         with tempfile.TemporaryDirectory() as directory:
             temp_path = Path(directory) / "temp"
             temp_path.write_text("42000")
-            meter = TerminalMeter(
-                streams=[], entries=[], footer=lambda: ["Routes active: 2", "Last: ok"], cpu_temp_path=temp_path
+            errors = ["ERROR: routes unavailable"]
+            meter = TerminalUI(
+                streams=[], entries=[], footer=lambda: ["Routes active: 2", *errors], cpu_temp_path=temp_path
             )
 
             first_render = meter.render_lines()
+            self.assertIn("ERROR: routes unavailable", first_render)
+            errors.clear()
             second_render = meter.render_lines()
-
-            self.assertEqual(len(first_render), len(second_render))
+            self.assertFalse(any("ERROR:" in line or "Last:" in line for line in second_render))
+            self.assertTrue(meter.render().endswith("\033[J"))
             self.assertIn("CPU temp: 42.0\u00b0C", first_render)
             self.assertIn("Routes active: 2", first_render)
 
@@ -264,7 +267,7 @@ class TerminalMeterTests(unittest.TestCase):
             SAMPLE_CONFIG, source_devices=["UMC1820 Pro"], sink_devices=["UMC1820 Pro", "Built-in Audio Stereo"]
         )
         popen = Mock(side_effect=lambda *a, **k: self._fake_proc(io.BytesIO(b"")))
-        meter = TerminalMeter(streams=streams, entries=entries, popen=popen)
+        meter = TerminalUI(streams=streams, entries=entries, popen=popen)
         meter.start()
 
         self.assertEqual(popen.call_count, len(streams))
@@ -276,7 +279,7 @@ class TerminalMeterTests(unittest.TestCase):
         block = _pcm_bytes([[1.0, -1.0]] * 2)
         spec = StreamSpec(name="TEST", target="dummy", channels=2)
         popen = Mock(side_effect=lambda *a, **k: self._fake_proc(io.BytesIO(block * 5)))
-        meter = TerminalMeter(streams=[spec], entries=[], frames=2, refresh=0.0, popen=popen)
+        meter = TerminalUI(streams=[spec], entries=[], frames=2, refresh=0.0, popen=popen)
 
         stop_event = Mock(spec=threading.Event)
         stop_event.is_set.side_effect = [False, True]

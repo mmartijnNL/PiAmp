@@ -246,7 +246,7 @@ class StreamReader:
             self.publish(levels_from_frame(block, self.spec.channels))
 
 
-class TerminalMeter:
+class TerminalUI:
     """Live per-input/per-zone level meter rendered to the terminal.
 
     Configured inputs are shown in a left column and configured zones in a
@@ -341,7 +341,6 @@ class TerminalMeter:
             lines.append("   ".join(cells).rstrip())
 
         lines.append("")
-        lines.append("--- PiAmp ---")
         cpu_temp = read_cpu_temp_celsius(self.cpu_temp_path)
         lines.append(f"CPU temp: {cpu_temp:.1f}\u00b0C" if cpu_temp is not None else "CPU temp: unavailable")
         if self.footer is not None:
@@ -354,9 +353,14 @@ class TerminalMeter:
         lines = [line[: size.columns - 1] for line in self.render_lines()][: size.lines]
         return "\033[H" + "".join(f"{line}\033[K\n" for line in lines).rstrip("\n") + "\033[J"
 
-    def run(self, stop_event: threading.Event | None = None) -> None:
+    def run(
+        self, stop_event: threading.Event | None = None,
+        on_ready: Callable[[], None] | None = None,
+    ) -> None:
         stop_event = stop_event or threading.Event()
         self.start()
+        if on_ready is not None:
+            on_ready()
         # Alternate screen + hidden cursor: the display stays put and the
         # user's scrollback is restored on exit.
         sys.stdout.write("\033[?1049h\033[?25l")
@@ -379,8 +383,8 @@ class TerminalMeter:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="PiAmp terminal audio level meter")
-    parser.add_argument("--config", default="config.yaml", help="Path to YAML config")
+    parser = argparse.ArgumentParser(description="PiAmp terminal UI")
+    parser.add_argument("--config", default="config/config.yaml", help="Path to YAML config")
     parser.add_argument("--rate", type=int, default=48000, help="Sample rate to request from pw-record")
     parser.add_argument("--frames", type=int, default=4800, help="Frames per analysis block")
     parser.add_argument("--refresh", type=float, default=0.1, help="Screen refresh interval in seconds")
@@ -395,7 +399,7 @@ def main() -> None:
 
     config = load_config(args.config)
     devices = PipeWireAdapter(config=config).discover_devices()
-    meter = TerminalMeter(
+    ui = TerminalUI(
         config=config,
         source_devices=devices.get("source_devices", []),
         sink_devices=devices.get("output_devices", []),
@@ -404,9 +408,9 @@ def main() -> None:
         refresh=args.refresh,
     )
     try:
-        meter.run()
+        ui.run()
     except KeyboardInterrupt:
-        print("PiAmp meter stopped.", flush=True)
+        print("PiAmp UI stopped.", flush=True)
 
 
 if __name__ == "__main__":

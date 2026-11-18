@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CMD="cd \"$SCRIPT_DIR\" && /usr/bin/python3 -m app.main --config config.yaml --state state/routes.json"
+CMD="cd \"$SCRIPT_DIR\" && /usr/bin/python3 -m app.main --config config/config.yaml --routes config/routes.yaml"
 PAUSE_CMD="echo; echo 'Press Enter to close this window...'; read -r -p ''"
 
 if [[ -n "${DISPLAY:-}" && "${XDG_SESSION_TYPE:-}" != "wayland" ]]; then

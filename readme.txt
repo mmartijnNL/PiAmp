@@ -1,6 +1,9 @@
 Running PiAmp
 Start with ./start_manual.sh or python3 -m app.main.
-PiAmp stays running and checks config.yaml and state/routes.json every second.
+All configuration files live in config/:
+  config/config.yaml defines inputs and zones.
+  config/routes.yaml defines input gains for each zone.
+PiAmp stays running and checks both files every second.
 Saved changes are validated and applied without restarting or rewriting either file.
 Invalid edits are reported and are not applied; save corrected files to retry.
 Empty zone route maps disconnect that zone's routes. Deleted or moved zones have
@@ -9,28 +12,47 @@ Zones sharing a multichannel device are reconciled together, preserving each
 zone's connections on reapply. Missing channels, failed PipeWire commands, and
 links that do not persist are reported as errors rather than successful routes.
 
+Route volume
+Edit config/routes.yaml to set each input's gain in each zone, in dB:
+Bureau Martijn:
+  TV: 0.0
+  Jazz: -20.0
+0 dB is unchanged, -20 dB is one tenth amplitude, and -80 dB is nearly silent.
+Gains must be finite and at most +20 dB. Positive gains can cause clipping.
+Nonzero gains use dedicated PipeWire virtual gain stages so one route cannot
+change another route's volume, even when zones share an output device.
+PiAmp does not change the hardware device's master volume.
+Remove an input entry to disconnect it, or use a zone value of {} to clear it.
+Configuration and saved routes are YAML; pw-dump's JSON is only PipeWire's
+internal protocol. The former root config.yaml and state/routes.json have
+been moved/converted into config/. Restart running instances after upgrading
+to use the new default paths. --routes overrides the routes path; --state
+remains a compatibility alias.
+
 Desktop autostart
 install_service.sh installs a desktop autostart entry, not a headless service.
 It takes effect on the next desktop login. Bare Openbox sessions also require
 PyXDG to process desktop autostart entries. If openbox-xdg-autostart reports
 "requires PyXDG to be installed", run: sudo apt install python3-xdg
 
-Terminal audio meter
+Terminal UI
+The terminal UI is implemented in app/ui.py.
 On X11, start_manual.sh disables screen blanking and display power saving for
 the current desktop session, so an idle PiAmp display stays visible. This also
 affects other windows in that session and lasts until logout. To restore the
 usual 10-minute timeout manually, run: xset s 600 +dpms
 Wayland power-saving settings are unchanged. Failures are printed as warnings.
 
-Run python3 -m app.meter (or start app.main without --no-meter) to show live
+Run python3 -m app.ui (or start app.main without --no-ui) to show live
 dBFS levels for every configured input (left column) and zone (right
 column), refreshed in place in the terminal. Each entry shows its device
 name without decorative dashes, followed by one bar per configured channel
 (L/R); channels not listed
-in config.yaml are never shown. Numeric levels are rounded to whole dBFS,
+in config/config.yaml are never shown. Numeric levels are rounded to whole dBFS,
 without decimals. A fixed-size status block below the columns always shows
-the CPU temperature and the active route count/last status message, rather
-than growing as events happen.
+the CPU temperature, active route count, and any currently active errors.
+Errors disappear after the failing operation succeeds; no last-event history
+is shown in the UI. --no-meter remains an alias for --no-ui.
 Capture uses exact PipeWire node names and native channel maps, without
 remixing, so configured channel indices measure the corresponding hardware
 channels rather than an automatically selected stereo mix.

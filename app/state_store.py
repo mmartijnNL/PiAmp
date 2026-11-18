@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import json
 import math
 from pathlib import Path
-from typing import Any
+
+import yaml
 
 
 class StateStore:
     def __init__(self, state_path: str | Path | None = None):
-        self.state_path = Path(state_path) if state_path is not None else Path("state/routes.json")
+        self.state_path = Path(state_path) if state_path is not None else Path("config/routes.yaml")
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
 
     def load(self, strict: bool = False) -> dict[str, dict[str, float]]:
@@ -18,8 +18,8 @@ class StateStore:
             return {}
 
         try:
-            raw = json.loads(self.state_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
+            raw = yaml.safe_load(self.state_path.read_text(encoding="utf-8"))
+        except yaml.YAMLError:
             if strict:
                 raise
             return {}
@@ -38,4 +38,4 @@ class StateStore:
 
     def save(self, state: dict[str, dict[str, float]]) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+        self.state_path.write_text(yaml.safe_dump(state, sort_keys=False), encoding="utf-8")

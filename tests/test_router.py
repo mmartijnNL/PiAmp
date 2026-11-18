@@ -1,8 +1,10 @@
 import json
+import re
 import textwrap
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 from app.pipewire import PipeWireAdapter
 from app.router import RouteManager
@@ -15,6 +17,36 @@ def graph_runner(fixture, commands):
         commands.append(command)
         if command == ["pw-dump"]:
             return json.dumps(objects)
+        if command[:3] == ["pw-cli", "create-node", "adapter"]:
+            props = command[3]
+            name = re.search(r"node.name = (\S+)", props).group(1)
+            zone = re.search(r"piamp.gain.zone = (\S+)", props).group(1)
+            channels = len(re.findall(r"AUX\d+", props))
+            node_id = max(obj.get("id", 0) for obj in objects) + 1
+            objects.append({
+                "id": node_id, "type": "PipeWire:Interface:Node",
+                "info": {"props": {"node.description": name, "media.class": "Audio/Sink", "piamp.gain.zone": zone}},
+            })
+            for index in range(channels):
+                for direction in ("in", "out"):
+                    objects.append({
+                        "id": max(obj.get("id", 0) for obj in objects) + 1,
+                        "type": "PipeWire:Interface:Port",
+                        "info": {"props": {"node.id": node_id, "port.direction": direction, "port.id": index}},
+                    })
+        if command[:2] == ["pw-cli", "set-param"]:
+            node = next(obj for obj in objects if obj.get("id") == int(command[2]))
+            volumes = re.search(r"channelVolumes = \[ (.*?) \]", command[4]).group(1)
+            node["info"]["params"] = {"Props": [{"channelVolumes": [float(value) for value in volumes.split()]}]}
+        if command[:2] == ["pw-cli", "destroy"]:
+            node_id = int(command[2])
+            ports = {obj["id"] for obj in objects if obj.get("type") == "PipeWire:Interface:Port"
+                     and obj["info"]["props"]["node.id"] == node_id}
+            objects[:] = [
+                obj for obj in objects if obj.get("id") != node_id and obj.get("id") not in ports
+                and obj.get("info", {}).get("output-port-id") not in ports
+                and obj.get("info", {}).get("input-port-id") not in ports
+            ]
         if command[0] == "pw-link":
             disconnect = command[1] == "-d"
             output_port, input_port = map(int, command[2:] if disconnect else command[1:])
@@ -203,7 +235,7 @@ def test_pipewire_adapter_applies_routes_to_live_nodes():
     assert result["applied"][0]["sink_id"] == "57"
     assert ["pw-link", "200", "300"] in commands
     assert ["pw-link", "201", "301"] in commands
-    assert ["wpctl", "set-volume", "57", "1.000"] in commands
+    assert not any(command[:2] == ["wpctl", "set-volume"] for command in commands)
 
 
 def test_pipewire_adapter_removes_stale_links_on_reapply():
@@ -322,8 +354,103 @@ def test_pipewire_command_failure_is_not_reported_as_success():
             PipeWireAdapter._default_runner(["pw-link", "100", "200"])
 
 
+def test_route_gains_are_independent_and_survive_reload_and_removal():
+    from app.models import InputDefinition, SystemConfig, ZoneDefinition
+
+    config = SystemConfig(
+        inputs=(
+            InputDefinition("Music", {"device": "Source", "channels": [0, 1]}),
+            InputDefinition("TV", {"device": "Source", "channels": [2, 3]}),
+        ),
+        zones=(
+            ZoneDefinition("Office", "Sink", [0, 1]),
+            ZoneDefinition("WC", "Sink", [2, 3]),
+        ),
+    )
+    objects = [
+        {"id": 10, "type": "PipeWire:Interface:Node",
+         "info": {"props": {"node.description": "Source", "media.class": "Audio/Source"}}},
+        {"id": 20, "type": "PipeWire:Interface:Node",
+         "info": {"props": {"node.description": "Sink", "media.class": "Audio/Sink"}}},
+    ]
+    for channel in range(4):
+        for node_id, direction, base in ((10, "out", 100), (20, "in", 200)):
+            objects.append({
+                "id": base + channel, "type": "PipeWire:Interface:Port",
+                "info": {"props": {"node.id": node_id, "port.direction": direction, "port.id": channel}},
+            })
+    commands = []
+    runner = graph_runner(json.dumps(objects), commands)
+    adapter = PipeWireAdapter(config=config, runner=runner)
+    state = {"Office": {"Music": -80, "TV": 0}, "WC": {"Music": -20}}
+    adapter.apply_routes(state, dry_run=True)
+    assert commands == [["pw-dump"]]
+    adapter.apply_routes(state)
+    nodes, links = adapter._parse_pw_dump(runner(["pw-dump"]))
+    office = next(node for node in nodes.values() if node["name"] == adapter._gain_name("Office", "Music"))
+    wc = next(node for node in nodes.values() if node["name"] == adapter._gain_name("WC", "Music"))
+    assert office["channel_volumes"] == pytest.approx([0.0001, 0.0001])
+    assert wc["channel_volumes"] == pytest.approx([0.1, 0.1])
+    assert (100, 200) not in links
+    assert (102, 200) in links
+    assert (103, 201) in links
+    assert (100, office["ports"]["in"][0]) in links
+    assert (office["ports"]["out"][0], 200) in links
+    assert (wc["ports"]["out"][0], 202) in links
+    assert not any(command[:2] == ["wpctl", "set-volume"] for command in commands)
+
+    commands.clear()
+    state["Office"]["Music"] = -6
+    adapter = PipeWireAdapter(config=config, runner=runner)
+    adapter.apply_routes(state)
+    assert not any(command[:2] == ["pw-cli", "create-node"] for command in commands)
+    nodes, _ = adapter._parse_pw_dump(runner(["pw-dump"]))
+    assert nodes[office["node_id"]]["channel_volumes"] == pytest.approx([10 ** (-6 / 20)] * 2)
+    assert nodes[wc["node_id"]]["channel_volumes"] == pytest.approx([0.1] * 2)
+
+    state["Office"]["Music"] = 0
+    adapter.apply_routes(state)
+    nodes, links = adapter._parse_pw_dump(runner(["pw-dump"]))
+    assert office["node_id"] not in nodes
+    assert (100, 200) in links
+    assert wc["node_id"] in nodes
+    adapter.apply_routes({"Office": state["Office"], "WC": {}})
+    nodes, _ = adapter._parse_pw_dump(runner(["pw-dump"]))
+    assert wc["node_id"] not in nodes
+
+    state["Office"]["Music"] = 6
+    adapter.apply_routes(state)
+    nodes, _ = adapter._parse_pw_dump(runner(["pw-dump"]))
+    office = next(node for node in nodes.values() if node["name"] == adapter._gain_name("Office", "Music"))
+    assert office["channel_volumes"] == pytest.approx([10 ** (6 / 20)] * 2)
+
+    state["Office"]["Music"] = -20
+    adapter.runner = lambda command: "" if command[:2] == ["pw-cli", "set-param"] else runner(command)
+    with pytest.raises(RuntimeError, match="did not retain requested gain"):
+        adapter.apply_routes(state)
+
+
+@pytest.mark.parametrize("gain", [float("nan"), float("inf"), 21])
+def test_invalid_route_gains_are_rejected_before_changing_audio(gain):
+    from app.models import InputDefinition, SystemConfig, ZoneDefinition
+
+    config = SystemConfig(
+        inputs=(InputDefinition("Music", "Source"),),
+        zones=(ZoneDefinition("Office", "Sink", [0, 1]),),
+    )
+    objects = [
+        {"id": 20, "type": "PipeWire:Interface:Node",
+         "info": {"props": {"node.description": "Sink", "media.class": "Audio/Sink"}}},
+    ]
+    commands = []
+    adapter = PipeWireAdapter(config, graph_runner(json.dumps(objects), commands))
+    with pytest.raises(ValueError, match="finite and at most"):
+        adapter.apply_routes({"Office": {"Music": gain}})
+    assert commands == [["pw-dump"]]
+
+
 def test_route_manager_routes_input_to_zones_and_mixes(tmp_path):
-    manager = RouteManager(state_path=tmp_path / "routes.json")
+    manager = RouteManager(state_path=tmp_path / "routes.yaml")
     manager.add_input("tv", ["L", "R"])
     manager.add_input("music", ["L", "R"])
     manager.add_zone("living_room", "default", ["L", "R"])
@@ -338,7 +465,7 @@ def test_route_manager_routes_input_to_zones_and_mixes(tmp_path):
 
 
 def test_route_manager_group_command_expands_all_zones(tmp_path):
-    manager = RouteManager(state_path=tmp_path / "routes.json")
+    manager = RouteManager(state_path=tmp_path / "routes.yaml")
     manager.add_input("tv", ["L", "R"])
     manager.add_zone("lounge", "default", ["L", "R"])
     manager.add_zone("bedroom", "default", ["L", "R"])
@@ -350,8 +477,8 @@ def test_route_manager_group_command_expands_all_zones(tmp_path):
 
 
 def test_route_manager_filters_persisted_state_to_configured_zones(tmp_path):
-    state_path = tmp_path / "routes.json"
-    state_path.write_text(json.dumps({
+    state_path = tmp_path / "routes.yaml"
+    state_path.write_text(yaml.safe_dump({
         "bedroom": {"tv": 2.5},
         "Bureau Martijn": {"Pi": 0.0},
     }), encoding="utf-8")
@@ -368,7 +495,7 @@ def test_route_manager_filters_persisted_state_to_configured_zones(tmp_path):
 
 
 def test_route_manager_persists_runtime_state(tmp_path):
-    state_path = tmp_path / "routes.json"
+    state_path = tmp_path / "routes.yaml"
     manager = RouteManager(state_path=state_path)
     manager.add_input("tv", ["L", "R"])
     manager.add_zone("lounge", "default", ["L", "R"])
@@ -376,6 +503,7 @@ def test_route_manager_persists_runtime_state(tmp_path):
 
     assert state_path.exists()
     assert state_path.read_text(encoding="utf-8")
+    assert yaml.safe_load(state_path.read_text()) == {"lounge": {"tv": -2.0}}
     reloaded = RouteManager(state_path=state_path)
     assert reloaded.state["lounge"]["tv"] == -2.0
 

@@ -10,7 +10,7 @@ import yaml
 
 from .api import AudioAPI
 from .config import load_config
-from .meter import TerminalMeter
+from .ui import TerminalUI
 from .pipewire import PipeWireAdapter
 from .player import PlayerManager
 from .router import RouteManager
@@ -18,9 +18,9 @@ from .router import RouteManager
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="PiAmp audio routing service")
-    parser.add_argument("--config", default="config.yaml", help="Path to YAML config")
-    parser.add_argument("--state", default="state/routes.json", help="Path to persisted route state")
-    parser.add_argument("--no-meter", action="store_true", help="Disable the live audio level meter")
+    parser.add_argument("--config", default="config/config.yaml", help="Path to YAML config")
+    parser.add_argument("--routes", "--state", dest="state", default="config/routes.yaml", help="Path to YAML routes")
+    parser.add_argument("--no-ui", "--no-meter", dest="no_ui", action="store_true", help="Disable the terminal UI")
     return parser
 
 
@@ -31,7 +31,8 @@ class PiAmpService:
         self.last_seen: tuple[bytes, bytes] | None = None
         self.api: AudioAPI | None = None
         self.messages: deque[str] = deque(maxlen=6)
-        self.meter_active = False
+        self.ui_active = False
+        self.active_errors: dict[str, str] = {}
         self.players = PlayerManager(self._node_exists)
 
     @staticmethod
@@ -42,7 +43,7 @@ class PiAmpService:
 
     def log(self, message: str) -> None:
         self.messages.append(message)
-        if not self.meter_active:
+        if not self.ui_active:
             print(message, flush=True)
 
     def check_for_changes(self) -> bool:
@@ -74,21 +75,24 @@ class PiAmpService:
                 self.api.pipewire_adapter.apply_routes(retired_zones)
             result = adapter.apply_routes(manager.state)
             self.api = AudioAPI(manager, adapter)
+            self.active_errors.pop("routes", None)
             self.log(f"Reloaded config and routes: applied {len(result['applied'])} route(s).")
             return True
         except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError, RuntimeError, yaml.YAMLError) as exc:
-            self.log(f"ERROR: reload failed: {exc}. Waiting for corrected files.")
+            error = f"ERROR: reload failed: {exc}. Waiting for corrected files."
+            self.active_errors["routes"] = error
+            self.log(error)
             return False
 
     def _status_lines(self) -> list[str]:
-        """Fixed-size status block: unlike `self.messages`, this never grows
-        on screen, it always reports the current route count and the most
-        recent reload/error message in the same two lines."""
         route_count = sum(len(routes) for routes in self.api.route_manager.state.values()) if self.api else 0
-        last_message = self.messages[-1] if self.messages else "Waiting for first reload..."
-        return [f"Routes active: {route_count}", f"Last: {last_message}"]
+        return [f"Routes active: {route_count}", *list(self.active_errors.values())]
 
-    def start_meter(self, stop_event: Event) -> None:
+    def start_ui(self, stop_event: Event) -> None:
+        def ready() -> None:
+            self.ui_active = True
+            self.active_errors.pop("ui", None)
+
         def target() -> None:
             # Config/device discovery can fail transiently (e.g. an in-progress
             # edit or a device that isn't up yet), so retry on the same 1s
@@ -97,18 +101,19 @@ class PiAmpService:
                 try:
                     config = load_config(self.config_path)
                     devices = PipeWireAdapter(config=config).discover_devices()
-                    meter = TerminalMeter(
+                    ui = TerminalUI(
                         config=config,
                         source_devices=devices.get("source_devices", []),
                         sink_devices=devices.get("output_devices", []),
                         footer=self._status_lines,
                     )
-                    self.meter_active = True
-                    meter.run(stop_event)
+                    ui.run(stop_event, on_ready=ready)
                     return
                 except Exception as exc:
-                    self.meter_active = False
-                    self.log(f"ERROR: audio meter stopped: {exc}")
+                    self.ui_active = False
+                    error = f"ERROR: terminal UI stopped: {exc}"
+                    self.active_errors["ui"] = error
+                    self.log(error)
                     stop_event.wait(1.0)
 
         threading.Thread(target=target, daemon=True).start()
@@ -127,8 +132,8 @@ def main() -> None:
     print("Starting PiAmp...", flush=True)
     service = PiAmpService(args.config, args.state)
     stop_event = Event()
-    if not args.no_meter:
-        service.start_meter(stop_event)
+    if not args.no_ui:
+        service.start_ui(stop_event)
     try:
         service.run(stop_event)
     except KeyboardInterrupt:

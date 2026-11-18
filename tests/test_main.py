@@ -1,9 +1,10 @@
-import json
 import tempfile
 import unittest
 from pathlib import Path
 from threading import Event
 from unittest.mock import Mock, patch
+
+import yaml
 
 from app.main import PiAmpService
 
@@ -12,20 +13,21 @@ class ServiceTests(unittest.TestCase):
     def test_reloads_both_files_without_rewriting_and_rejects_invalid_edits(self):
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "config.yaml"
-            state_path = Path(directory) / "routes.json"
+            state_path = Path(directory) / "routes.yaml"
             config_path.write_text("inputs:\n  - name: Aux\n    source: Test\nzones:\n  - name: Office\n    device: Test\n    channels: [0, 1]\n")
-            state_path.write_text('{"Office": {"Aux": 0}}')
+            state_path.write_text("Office:\n  Aux: 0\n")
             with patch("app.main.PipeWireAdapter") as adapter_class:
                 adapter = adapter_class.return_value
                 adapter.validate_configured_devices.return_value = {"ok": True}
                 adapter.apply_routes.return_value = {"applied": []}
                 service = PiAmpService(str(config_path), str(state_path))
                 self.assertTrue(service.check_for_changes())
-                self.assertEqual(state_path.read_text(), '{"Office": {"Aux": 0}}')
+                self.assertEqual(service._status_lines(), ["Routes active: 1"])
+                self.assertEqual(state_path.read_text(), "Office:\n  Aux: 0\n")
                 self.assertFalse(service.check_for_changes())
                 self.assertEqual(adapter.apply_routes.call_count, 2)
 
-                state_path.write_text(json.dumps({"Office": {}}))
+                state_path.write_text("Office: {}\n")
                 self.assertTrue(service.check_for_changes())
                 adapter.apply_routes.assert_called_with({"Office": {}})
 
@@ -35,15 +37,17 @@ class ServiceTests(unittest.TestCase):
 
                 previous_api = service.api
                 calls = adapter.apply_routes.call_count
-                for invalid in ('{', '[]', '{"Office": {"Aux": "NaN"}}'):
+                for invalid in ('{', '[]', 'Office:\n  Aux: .nan\n'):
                     state_path.write_text(invalid)
                     self.assertFalse(service.check_for_changes())
                     self.assertIs(service.api, previous_api)
+                    self.assertTrue(any("ERROR: reload failed:" in line for line in service._status_lines()))
                     self.assertEqual(adapter.apply_routes.call_count, calls)
                     self.assertEqual(state_path.read_text(), invalid)
 
-                state_path.write_text('{"Office": {"Aux": -3}}')
+                state_path.write_text("Office:\n  Aux: -3\n")
                 self.assertTrue(service.check_for_changes())
+                self.assertFalse(any("ERROR:" in line or "Last:" in line for line in service._status_lines()))
                 config_path.write_text("zones: [")
                 calls = adapter.apply_routes.call_count
                 self.assertFalse(service.check_for_changes())
@@ -52,9 +56,9 @@ class ServiceTests(unittest.TestCase):
     def test_deleted_zone_disconnects_old_routes(self):
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "config.yaml"
-            state_path = Path(directory) / "routes.json"
+            state_path = Path(directory) / "routes.yaml"
             config_path.write_text("inputs:\n  - name: Aux\nzones:\n  - name: Office\n    device: Test\n")
-            state_path.write_text('{"Office": {"Aux": 0}}')
+            state_path.write_text("Office:\n  Aux: 0\n")
             with patch("app.main.PipeWireAdapter") as adapter_class:
                 adapter = adapter_class.return_value
                 adapter.validate_configured_devices.return_value = {"ok": True}
@@ -66,10 +70,10 @@ class ServiceTests(unittest.TestCase):
                 self.assertTrue(service.check_for_changes())
                 self.assertEqual(adapter.apply_routes.call_args_list[2].args, ({"Office": {}},))
                 adapter.apply_routes.assert_called_with({})
-                self.assertEqual(state_path.read_text(), '{"Office": {"Aux": 0}}')
+                self.assertEqual(yaml.safe_load(state_path.read_text()), {"Office": {"Aux": 0}})
 
     def test_run_keeps_polling_until_stopped(self):
-        service = PiAmpService("config.yaml", "routes.json")
+        service = PiAmpService("config.yaml", "routes.yaml")
         stop_event = Mock(spec=Event)
         stop_event.is_set.side_effect = [False, False, False, True]
         with patch.object(service, "check_for_changes") as check:
@@ -81,7 +85,7 @@ class ServiceTests(unittest.TestCase):
     def test_pipewire_command_failure_is_logged_without_success(self):
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "config.yaml"
-            state_path = Path(directory) / "routes.json"
+            state_path = Path(directory) / "routes.yaml"
             config_path.write_text("inputs: []\nzones: []\n")
             state_path.write_text("{}")
             with patch("app.main.PipeWireAdapter") as adapter_class:

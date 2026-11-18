@@ -4,7 +4,7 @@ from pathlib import Path
 
 import yaml
 
-from .logic import RouteState, parse_route_state
+from .logic import RouteMap, RouteState, TimedRoute, parse_route_state
 
 
 class StateStore:
@@ -30,5 +30,19 @@ class StateStore:
         return parse_route_state(raw)
 
     def save(self, state: RouteState) -> None:
+        def serialize(mapping: RouteMap) -> dict[str, object]:
+            result: dict[str, object] = {}
+            for name, value in mapping.items():
+                if isinstance(value, TimedRoute):
+                    result[name] = {
+                        "Gain": value.gain_db, "StartTime": value.start_time, "EndTime": value.end_time,
+                    }
+                else:
+                    result[name] = serialize(value) if isinstance(value, dict) else value
+            return result
+
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(yaml.safe_dump(state, sort_keys=False), encoding="utf-8")
+        self.state_path.write_text(
+            yaml.safe_dump({zone: serialize(routes) for zone, routes in state.items()}, sort_keys=False),
+            encoding="utf-8",
+        )

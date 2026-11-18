@@ -53,6 +53,29 @@ count as silence; capture errors are shown and capture is retried.
 Fallback works with --no-ui. Automatic switching never rewrites routes.yaml.
 Reloading the configuration resets fallback selection and silence timers.
 
+Folder playback and daily timers
+Folder inputs pause at their current track position whenever no output zone
+selects them, and resume as soon as any zone selects them again. Their PipeWire
+stream stays alive while paused. A route with a quiet gain still counts as active.
+To limit an input route to a daily time window, replace its numeric gain with:
+WC:
+  OR:
+    TV: 0.0
+    Jazz:
+      Gain: -40.0
+      StartTime: "10:00"
+      EndTime: "22:00"
+All three fields are required. Quote times and use 24-hour HH:MM format.
+Times use the Pi's local clock, including local daylight-saving changes.
+The start is inclusive and the end exclusive; equal start/end times are invalid.
+Overnight windows work too, e.g. "22:00" to "06:00".
+Outside its window, a route is unavailable: AND omits it and OR skips it
+immediately, without waiting five seconds. If all branches are unavailable,
+the zone is disconnected. A newly available higher-priority branch is tried
+immediately, then the usual audio fallback rules apply.
+Timers work without OR rules or the terminal UI and are checked every 0.1 seconds,
+even while audio detection is unavailable. Automatic updates do not rewrite files.
+
 Desktop autostart
 install_service.sh installs a desktop autostart entry, not a headless service.
 It takes effect on the next desktop login. Bare Openbox sessions also require

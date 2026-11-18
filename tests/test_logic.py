@@ -1,3 +1,6 @@
+from datetime import datetime
+from unittest.mock import patch
+
 import pytest
 import yaml
 
@@ -110,3 +113,64 @@ def test_unknown_inputs_inside_logic_are_reported(tmp_path):
     config = SystemConfig(inputs=(InputDefinition("Jazz"),), zones=(ZoneDefinition("WC"),))
     with pytest.raises(ValueError, match="unknown input.*Typo"):
         RouteManager(config, path, persist_state=False, strict_state=True)
+
+
+@pytest.mark.parametrize(("clock", "expected"), [
+    ("09:59:59", {}), ("10:00:00", {"Jazz": -40}),
+    ("21:59:59", {"Jazz": -40}), ("22:00:00", {}),
+])
+def test_daily_timer_boundaries(clock, expected):
+    routes = parse_route_state({"WC": {"Jazz": {
+        "Gain": -40, "StartTime": "10:00", "EndTime": "22:00",
+    }}})
+    with patch("app.logic.datetime") as wall_clock:
+        wall_clock.now.return_value = datetime.fromisoformat(f"2026-11-18T{clock}")
+        assert RouteSelector().resolve(routes, {}, 0) == {"WC": expected}
+
+
+def test_overnight_timer_skips_unavailable_branches_and_resumes_on_time():
+    routes = parse_route_state({"WC": {"OR": {
+        "Jazz": {"Gain": -40, "StartTime": "22:00", "EndTime": "06:00"},
+        "TV": 0,
+    }}})
+    selector = RouteSelector()
+    with patch("app.logic.datetime") as wall_clock:
+        for clock, expected in [
+            ("21:59:59", {"TV": 0}), ("22:00:00", {"Jazz": -40}),
+            ("05:59:59", {"Jazz": -40}), ("06:00:00", {"TV": 0}),
+        ]:
+            wall_clock.now.return_value = datetime.fromisoformat(f"2026-11-18T{clock}")
+            assert selector.resolve(routes, {}, 0)["WC"] == expected
+
+
+def test_timer_can_disable_the_only_or_branch():
+    routes = parse_route_state({"WC": {"OR": {
+        "Jazz": {"Gain": -40, "StartTime": "10:00", "EndTime": "22:00"},
+    }}})
+    with patch("app.logic.datetime") as wall_clock:
+        wall_clock.now.return_value = datetime(2026, 11, 18, 23)
+        assert RouteSelector().resolve(routes, {}, 0) == {"WC": {}}
+
+
+@pytest.mark.parametrize("timer", [
+    {"Gain": 0, "StartTime": "10:00"},
+    {"Gain": 0, "StartTime": "25:00", "EndTime": "22:00"},
+    {"Gain": 0, "StartTime": "10:00", "EndTime": "10:00"},
+    {"Gain": 0, "StartTime": 600, "EndTime": "22:00"},
+    {"Gain": True, "StartTime": "10:00", "EndTime": "22:00"},
+    {"Gain": 0, "StartTime": "10:00", "EndTime": "22:00", "Typo": 1},
+])
+def test_invalid_timers_are_rejected(timer):
+    with pytest.raises(ValueError):
+        parse_route_state({"WC": {"Jazz": timer}})
+
+
+def test_timer_survives_route_filtering_and_save(tmp_path):
+    path = tmp_path / "routes.yaml"
+    original = {"WC": {"Jazz": {"Gain": -40, "StartTime": "10:00", "EndTime": "22:00"}}}
+    path.write_text(yaml.safe_dump(original))
+    config = SystemConfig(inputs=(InputDefinition("Jazz"),), zones=(ZoneDefinition("WC"),))
+    manager = RouteManager(config, path, persist_state=False, strict_state=True)
+    assert not manager.needs_levels
+    manager.save_state()
+    assert yaml.safe_load(path.read_text()) == original

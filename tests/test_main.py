@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from threading import Event
 from unittest.mock import Mock, patch
@@ -100,14 +101,23 @@ class ServiceTests(unittest.TestCase):
                 monitor.read_levels.return_value = {"TV": -80, "Jazz": -10}
                 service = PiAmpService(str(config_path), str(routes_path))
                 self.assertTrue(service.check_for_changes())
+                service.players = Mock()
                 self.assertFalse(service.ui_active)
                 self.assertEqual(service.api.route_manager.state, {"WC": {"TV": 0}})
                 self.assertFalse(service.update_routes(4.999))
                 self.assertTrue(service.update_routes(5))
                 adapter.apply_routes.assert_called_with({"WC": {"Jazz": -60}})
+                service.players.set_routes.assert_called_with({"WC": {"Jazz": -60}})
                 monitor.read_levels.return_value = {"TV": -10, "Jazz": -10}
+                adapter.apply_routes.side_effect = RuntimeError("link failed")
+                service.players.set_routes.reset_mock()
+                self.assertFalse(service.update_routes(5.1))
+                service.players.set_routes.assert_not_called()
+                self.assertEqual(service.api.route_manager.state, {"WC": {"Jazz": -60}})
+                adapter.apply_routes.side_effect = None
                 self.assertTrue(service.update_routes(5.1))
                 adapter.apply_routes.assert_called_with({"WC": {"TV": 0}})
+                service.players.set_routes.assert_called_with({"WC": {"TV": 0}})
                 self.assertEqual(routes_path.read_text(), text)
                 monitor.read_levels.side_effect = RuntimeError("capture stopped")
                 self.assertFalse(service.update_routes(6))
@@ -129,6 +139,61 @@ class ServiceTests(unittest.TestCase):
                 self.assertFalse(service.check_for_changes())
                 self.assertIsNone(service.api)
                 self.assertIn("ERROR: reload failed: failed to link ports", service.messages[-1])
+
+    def test_timer_only_routes_update_players_without_an_audio_monitor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config.yaml"
+            routes = Path(directory) / "routes.yaml"
+            config.write_text("inputs:\n  - name: Jazz\nzones:\n  - name: WC\n    device: Test\n")
+            routes.write_text('WC:\n  Jazz:\n    Gain: -40\n    StartTime: "10:00"\n    EndTime: "22:00"\n')
+            with patch("app.main.PipeWireAdapter") as adapters, patch(
+                "app.main.InputLevelMonitor"
+            ) as monitors, patch("app.main.PlayerManager") as players, patch("app.logic.datetime") as clock:
+                adapter = adapters.return_value
+                adapter.validate_configured_devices.return_value = {"ok": True}
+                adapter.apply_routes.return_value = {"applied": []}
+                clock.now.return_value = datetime(2026, 11, 18, 9)
+                service = PiAmpService(str(config), str(routes))
+                self.assertTrue(service.check_for_changes())
+                players.return_value.set_routes.assert_called_with({"WC": {}})
+                clock.now.return_value = datetime(2026, 11, 18, 10)
+                self.assertTrue(service.update_routes(1))
+                players.return_value.set_routes.assert_called_with({"WC": {"Jazz": -40}})
+                clock.now.return_value = datetime(2026, 11, 18, 22)
+                self.assertTrue(service.update_routes(2))
+                players.return_value.set_routes.assert_called_with({"WC": {}})
+                monitors.assert_not_called()
+
+    def test_timers_still_switch_during_monitor_failures_and_retry_delay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config.yaml"
+            routes = Path(directory) / "routes.yaml"
+            config.write_text("inputs:\n  - name: TV\n  - name: Jazz\nzones:\n  - name: WC\n    device: Test\n")
+            routes.write_text(
+                'WC:\n  OR:\n    TV:\n      Gain: 0\n'
+                '      StartTime: "10:00"\n      EndTime: "22:00"\n    Jazz: -40\n'
+            )
+            with patch("app.main.PipeWireAdapter") as adapters, patch(
+                "app.main.InputLevelMonitor"
+            ) as monitors, patch("app.main.PlayerManager") as players, patch("app.logic.datetime") as clock:
+                adapter = adapters.return_value
+                adapter.validate_configured_devices.return_value = {"ok": True}
+                adapter.apply_routes.return_value = {"applied": []}
+                monitor = monitors.return_value
+                monitor.read_levels.return_value = {"TV": -10, "Jazz": -10}
+                clock.now.return_value = datetime(2026, 11, 18, 21)
+                service = PiAmpService(str(config), str(routes))
+                self.assertTrue(service.check_for_changes())
+                monitor.read_levels.side_effect = RuntimeError("capture stopped")
+                clock.now.return_value = datetime(2026, 11, 18, 22)
+                self.assertTrue(service.update_routes(1))
+                players.return_value.set_routes.assert_called_with({"WC": {"Jazz": -40}})
+                self.assertIn("capture stopped", service.active_errors["logic"])
+                clock.now.return_value = datetime(2026, 11, 19, 10)
+                self.assertTrue(service.update_routes(1.1))
+                players.return_value.set_routes.assert_called_with({"WC": {"TV": 0}})
+                self.assertEqual(monitor.read_levels.call_count, 2)
+                self.assertIn("capture stopped", service.active_errors["logic"])
 
 
 if __name__ == "__main__":

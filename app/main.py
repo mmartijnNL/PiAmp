@@ -90,6 +90,7 @@ class PiAmpService:
             if retired_zones:
                 self.api.pipewire_adapter.apply_routes(retired_zones)
             result = adapter.apply_routes(manager.state)
+            self.players.set_routes(manager.state)
             self.api = AudioAPI(manager, adapter)
             previous_monitor = self.level_monitor
             self.level_monitor = candidate_monitor
@@ -109,30 +110,34 @@ class PiAmpService:
             return False
 
     def update_routes(self, now: float | None = None) -> bool:
-        if self.api is None or not self.api.route_manager.needs_levels:
+        if self.api is None:
             return False
+        manager = self.api.route_manager
         now = time.monotonic() if now is None else now
-        if self.level_monitor is None and now < self.monitor_retry_at:
-            return False
-        try:
-            if self.level_monitor is None:
-                config = self.monitor_config
-                if config is None:
-                    raise RuntimeError("no input-monitor configuration has been loaded")
-                self.level_monitor = InputLevelMonitor(config)
-                self.level_monitor.start()
-            levels = self.level_monitor.read_levels()
-        except (OSError, ValueError, RuntimeError) as exc:
-            self.api.route_manager.resolve({}, now)
-            if self.level_monitor is not None:
-                self.level_monitor.stop()
-                self.level_monitor = None
-            self.monitor_retry_at = now + 1.0
-            error = f"ERROR: route audio detection failed: {exc}"
-            if self.active_errors.get("logic") != error:
-                self.log(error)
-            self.active_errors["logic"] = error
-            return False
+        levels: dict[str, float] = {}
+        monitor_failed = False
+        if manager.needs_levels:
+            if self.level_monitor is None and now < self.monitor_retry_at:
+                monitor_failed = True
+            else:
+                try:
+                    if self.level_monitor is None:
+                        config = self.monitor_config
+                        if config is None:
+                            raise RuntimeError("no input-monitor configuration has been loaded")
+                        self.level_monitor = InputLevelMonitor(config)
+                        self.level_monitor.start()
+                    levels = self.level_monitor.read_levels()
+                except (OSError, ValueError, RuntimeError) as exc:
+                    if self.level_monitor is not None:
+                        self.level_monitor.stop()
+                        self.level_monitor = None
+                    self.monitor_retry_at = now + 1.0
+                    error = f"ERROR: route audio detection failed: {exc}"
+                    if self.active_errors.get("logic") != error:
+                        self.log(error)
+                    self.active_errors["logic"] = error
+                    monitor_failed = True
         try:
             resolved = self.api.route_manager.resolve(levels, now)
             changed = resolved != self.api.route_manager.state
@@ -143,7 +148,9 @@ class PiAmpService:
                 adapter.apply_routes(resolved, dry_run=True)
                 adapter.apply_routes(resolved)
                 self.api.route_manager.state = resolved
-            self.active_errors.pop("logic", None)
+            self.players.set_routes(resolved)
+            if not monitor_failed:
+                self.active_errors.pop("logic", None)
             return changed
         except (OSError, ValueError, RuntimeError) as exc:
             error = f"ERROR: automatic route change failed: {exc}"

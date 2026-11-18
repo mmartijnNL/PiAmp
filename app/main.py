@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import threading
+import time
 from collections import deque
 from pathlib import Path
 from threading import Event
@@ -14,6 +15,8 @@ from .ui import TerminalUI
 from .pipewire import PipeWireAdapter
 from .player import PlayerManager
 from .router import RouteManager
+from .audio import InputLevelMonitor
+from .models import SystemConfig
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -34,6 +37,9 @@ class PiAmpService:
         self.ui_active = False
         self.active_errors: dict[str, str] = {}
         self.players = PlayerManager(self._node_exists)
+        self.level_monitor: InputLevelMonitor | None = None
+        self.monitor_config: SystemConfig | None = None
+        self.monitor_retry_at = 0.0
 
     @staticmethod
     def _node_exists(node_name: str) -> bool:
@@ -47,6 +53,7 @@ class PiAmpService:
             print(message, flush=True)
 
     def check_for_changes(self) -> bool:
+        candidate_monitor = None
         try:
             snapshot = (self.config_path.read_bytes(), self.state_path.read_bytes())
             if snapshot == self.last_seen:
@@ -59,6 +66,13 @@ class PiAmpService:
                 raise ValueError("configured audio devices are unavailable: " + ", ".join(validation["missing_devices"]))
             manager = RouteManager(config, state_path=self.state_path, persist_state=False, strict_state=True)
             self.players.sync(config)
+            if manager.needs_levels:
+                if self.level_monitor is not None and config == self.monitor_config:
+                    candidate_monitor = self.level_monitor
+                else:
+                    candidate_monitor = InputLevelMonitor(config)
+                    candidate_monitor.start()
+                manager.state = manager.resolve(candidate_monitor.read_levels())
             adapter.apply_routes(manager.state, dry_run=True)
             retired_zones = {}
             if self.api is not None:
@@ -69,19 +83,73 @@ class PiAmpService:
                 if retired_zones:
                     self.api.pipewire_adapter.apply_routes(retired_zones, dry_run=True)
             if snapshot != (self.config_path.read_bytes(), self.state_path.read_bytes()):
+                if candidate_monitor is not None and candidate_monitor is not self.level_monitor:
+                    candidate_monitor.stop()
                 self.last_seen = None
                 return False
             if retired_zones:
                 self.api.pipewire_adapter.apply_routes(retired_zones)
             result = adapter.apply_routes(manager.state)
             self.api = AudioAPI(manager, adapter)
+            previous_monitor = self.level_monitor
+            self.level_monitor = candidate_monitor
+            self.monitor_config = config
+            if previous_monitor is not None and previous_monitor is not candidate_monitor:
+                previous_monitor.stop()
             self.active_errors.pop("routes", None)
+            self.active_errors.pop("logic", None)
             self.log(f"Reloaded config and routes: applied {len(result['applied'])} route(s).")
             return True
         except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError, RuntimeError, yaml.YAMLError) as exc:
+            if candidate_monitor is not None and candidate_monitor is not self.level_monitor:
+                candidate_monitor.stop()
             error = f"ERROR: reload failed: {exc}. Waiting for corrected files."
             self.active_errors["routes"] = error
             self.log(error)
+            return False
+
+    def update_routes(self, now: float | None = None) -> bool:
+        if self.api is None or not self.api.route_manager.needs_levels:
+            return False
+        now = time.monotonic() if now is None else now
+        if self.level_monitor is None and now < self.monitor_retry_at:
+            return False
+        try:
+            if self.level_monitor is None:
+                config = self.monitor_config
+                if config is None:
+                    raise RuntimeError("no input-monitor configuration has been loaded")
+                self.level_monitor = InputLevelMonitor(config)
+                self.level_monitor.start()
+            levels = self.level_monitor.read_levels()
+        except (OSError, ValueError, RuntimeError) as exc:
+            self.api.route_manager.resolve({}, now)
+            if self.level_monitor is not None:
+                self.level_monitor.stop()
+                self.level_monitor = None
+            self.monitor_retry_at = now + 1.0
+            error = f"ERROR: route audio detection failed: {exc}"
+            if self.active_errors.get("logic") != error:
+                self.log(error)
+            self.active_errors["logic"] = error
+            return False
+        try:
+            resolved = self.api.route_manager.resolve(levels, now)
+            changed = resolved != self.api.route_manager.state
+            if changed:
+                adapter = self.api.pipewire_adapter
+                if adapter is None:
+                    raise RuntimeError("no PipeWire adapter is available for automatic routing")
+                adapter.apply_routes(resolved, dry_run=True)
+                adapter.apply_routes(resolved)
+                self.api.route_manager.state = resolved
+            self.active_errors.pop("logic", None)
+            return changed
+        except (OSError, ValueError, RuntimeError) as exc:
+            error = f"ERROR: automatic route change failed: {exc}"
+            if self.active_errors.get("logic") != error:
+                self.log(error)
+            self.active_errors["logic"] = error
             return False
 
     def _status_lines(self) -> list[str]:
@@ -120,10 +188,15 @@ class PiAmpService:
 
     def run(self, stop_event: Event | None = None) -> None:
         stop_event = stop_event or Event()
-        self.log("PiAmp watching config and routes for changes (every 1 second).")
-        while not stop_event.is_set():
-            self.check_for_changes()
-            stop_event.wait(1.0)
+        self.log("PiAmp watching config, routes, and input activity (every 0.1 seconds).")
+        try:
+            while not stop_event.is_set():
+                self.check_for_changes()
+                self.update_routes()
+                stop_event.wait(0.1)
+        finally:
+            if self.level_monitor is not None:
+                self.level_monitor.stop()
 
 
 def main() -> None:

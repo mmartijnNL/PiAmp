@@ -80,7 +80,40 @@ class ServiceTests(unittest.TestCase):
             service.run(stop_event)
         self.assertEqual(check.call_count, 3)
         self.assertEqual(stop_event.wait.call_count, 3)
-        stop_event.wait.assert_called_with(1.0)
+        stop_event.wait.assert_called_with(0.1)
+
+    def test_automatic_routes_work_without_ui_and_do_not_rewrite_logic(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "config.yaml"
+            routes_path = Path(directory) / "routes.yaml"
+            config_path.write_text(
+                "inputs:\n  - name: TV\n  - name: Jazz\n"
+                "zones:\n  - name: WC\n    device: Test\n"
+            )
+            text = "WC:\n  OR:\n    TV: 0\n    Jazz: -60\n"
+            routes_path.write_text(text)
+            with patch("app.main.PipeWireAdapter") as adapters, patch("app.main.InputLevelMonitor") as monitors, patch("app.router.time.monotonic", return_value=0):
+                adapter = adapters.return_value
+                adapter.validate_configured_devices.return_value = {"ok": True}
+                adapter.apply_routes.return_value = {"applied": []}
+                monitor = monitors.return_value
+                monitor.read_levels.return_value = {"TV": -80, "Jazz": -10}
+                service = PiAmpService(str(config_path), str(routes_path))
+                self.assertTrue(service.check_for_changes())
+                self.assertFalse(service.ui_active)
+                self.assertEqual(service.api.route_manager.state, {"WC": {"TV": 0}})
+                self.assertFalse(service.update_routes(4.999))
+                self.assertTrue(service.update_routes(5))
+                adapter.apply_routes.assert_called_with({"WC": {"Jazz": -60}})
+                monitor.read_levels.return_value = {"TV": -10, "Jazz": -10}
+                self.assertTrue(service.update_routes(5.1))
+                adapter.apply_routes.assert_called_with({"WC": {"TV": 0}})
+                self.assertEqual(routes_path.read_text(), text)
+                monitor.read_levels.side_effect = RuntimeError("capture stopped")
+                self.assertFalse(service.update_routes(6))
+                self.assertIn("capture stopped", service.active_errors["logic"])
+                self.assertEqual(service.api.route_manager.state, {"WC": {"TV": 0}})
+                monitor.stop.assert_called_once()
 
     def test_pipewire_command_failure_is_logged_without_success(self):
         with tempfile.TemporaryDirectory() as directory:

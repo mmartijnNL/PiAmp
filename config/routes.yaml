@@ -1,7 +1,10 @@
 Bureau Martijn:
-  TV: 0.0
-  GameCube: 0.0
+  AND:
+    TV: 0.0
+    GameCube: 0.0
 WC:
-  TV: 0.0
-  GameCube: 0.0
-  Jazz: -60.0
+  OR:
+    AND:
+      TV: 0.0
+      GameCube: 0.0
+    Jazz: -40.0

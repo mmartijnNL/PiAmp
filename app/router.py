@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 from typing import Iterable
 
 from .models import SystemConfig
 from .state_store import StateStore
+from .logic import RouteMap, RouteState, RouteSelector, ResolvedRoutes, uses_fallback
 
 
 class RouteManager:
@@ -12,6 +14,7 @@ class RouteManager:
         self._inputs: dict[str, list[str]] = {}
         self._zones: dict[str, dict[str, object]] = {}
         self.state: dict[str, dict[str, float]] = {}
+        self.routes: RouteState = {}
         self.state_store = StateStore(state_path)
 
         if config is not None:
@@ -20,25 +23,36 @@ class RouteManager:
             for zone_def in config.zones:
                 self.add_zone(zone_def.name, zone_def.device, list(zone_def.channels))
 
-        self.state = self.state_store.load(strict=strict_state)
+        self.routes = self.state_store.load(strict=strict_state)
+        self.selector = RouteSelector(getattr(config, "silence_threshold_db", -50.0))
+        self._levels: dict[str, float] = {}
         if config is not None:
-            filtered_state: dict[str, dict[str, float]] = {}
-
-            for zone_name, route_map in self.state.items():
+            def filter_inputs(mapping: RouteMap, inside_logic: bool = False) -> RouteMap:
+                if inside_logic:
+                    unknown = set(mapping) - {"AND", "OR"} - set(self._inputs)
+                    if unknown:
+                        raise ValueError("unknown input(s) in route logic: " + ", ".join(sorted(unknown)))
+                filtered = {
+                    name: filter_inputs(value, True) if isinstance(value, dict) else value
+                    for name, value in mapping.items()
+                    if name in {"AND", "OR"} or name in self._inputs
+                }
+                if "OR" in filtered and not filtered["OR"]:
+                    raise ValueError("OR groups must contain a configured input")
+                return filtered
+            filtered_state: dict[str, RouteMap] = {}
+            for zone_name, route_map in self.routes.items():
                 if zone_name not in self._zones:
                     continue
-                filtered_state[zone_name] = {
-                    input_name: float(gain)
-                    for input_name, gain in route_map.items()
-                    if input_name in self._inputs
-                }
+                filtered_state[zone_name] = filter_inputs(route_map)
 
-            self.state = filtered_state
+            self.routes = filtered_state
             for zone_name in self._zones:
-                self.state.setdefault(zone_name, {})
+                self.routes.setdefault(zone_name, {})
 
             if persist_state:
                 self.save_state()
+        self.state = self.resolve({})
 
     def add_input(self, name: str, channels: list[str] | None = None) -> None:
         self._inputs[name] = list(channels or [])
@@ -49,9 +63,18 @@ class RouteManager:
             "output_channels": list(output_channels or []),
         }
         self.state.setdefault(name, {})
+        self.routes.setdefault(name, {})
 
     def save_state(self) -> None:
-        self.state_store.save(self.state)
+        self.state_store.save(self.routes)
+
+    @property
+    def needs_levels(self) -> bool:
+        return uses_fallback(self.routes)
+
+    def resolve(self, levels: dict[str, float], now: float | None = None) -> ResolvedRoutes:
+        self._levels = levels
+        return self.selector.resolve(self.routes, levels, time.monotonic() if now is None else now)
 
     def _expand_zones(self, zones: str | Iterable[str]) -> list[str]:
         if isinstance(zones, str):
@@ -76,8 +99,9 @@ class RouteManager:
 
         selected_zones = self._expand_zones(zones)
         for zone_name in selected_zones:
-            self.state.setdefault(zone_name, {})
-            self.state[zone_name][input_name] = float(gain_db)
+            self.routes.setdefault(zone_name, {})
+            self.routes[zone_name][input_name] = float(gain_db)
+        self.state = self.resolve(self._levels)
         self.save_state()
         return self.state
 

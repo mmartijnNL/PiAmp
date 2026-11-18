@@ -60,3 +60,4 @@ class SystemConfig:
     inputs: Tuple[InputDefinition, ...] = field(default_factory=tuple)
     zones: Tuple[ZoneDefinition, ...] = field(default_factory=tuple)
     routes: Tuple[RouteDefinition, ...] = field(default_factory=tuple)
+    silence_threshold_db: float = -50.0

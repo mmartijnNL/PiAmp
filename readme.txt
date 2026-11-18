@@ -3,7 +3,7 @@ Start with ./start_manual.sh or python3 -m app.main.
 All configuration files live in config/:
   config/config.yaml defines inputs and zones.
   config/routes.yaml defines input gains for each zone.
-PiAmp stays running and checks both files every second.
+PiAmp stays running and checks files and route activity every 0.1 seconds.
 Saved changes are validated and applied without restarting or rewriting either file.
 Invalid edits are reported and are not applied; save corrected files to retry.
 Empty zone route maps disconnect that zone's routes. Deleted or moved zones have
@@ -28,6 +28,30 @@ internal protocol. The former root config.yaml and state/routes.json have
 been moved/converted into config/. Restart running instances after upgrading
 to use the new default paths. --routes overrides the routes path; --state
 remains a compatibility alias.
+
+Route logic
+Flat input/gain mappings still mix all listed inputs. Use AND to make a mix
+explicit, and OR for ordered fallback. Operators can be nested:
+WC:
+  OR:
+    AND:
+      TV: 0.0
+      GameCube: 0.0
+    Jazz: -60.0
+This normally mixes TV and GameCube. Only when BOTH remain below the silence
+threshold for five continuous seconds does it switch to Jazz. Either input
+becoming audible immediately restores the higher-priority mix. Any audible
+channel keeps an input active. An AND branch is active if any child is active.
+OR branches are tried in YAML order; branches already silent for five seconds
+are skipped, and the final branch remains selected if all are silent.
+Set silence_threshold_db in config/config.yaml (default -50.0 dBFS).
+Detection measures the original inputs, before route gains, so a deliberately
+quiet fallback such as Jazz at -60 dB is not mistaken for a silent source.
+Input levels are monitored continuously, including unselected inputs,
+and short bursts reset the silence timer. Missing/failed measurements never
+count as silence; capture errors are shown and capture is retried.
+Fallback works with --no-ui. Automatic switching never rewrites routes.yaml.
+Reloading the configuration resets fallback selection and silence timers.
 
 Desktop autostart
 install_service.sh installs a desktop autostart entry, not a headless service.

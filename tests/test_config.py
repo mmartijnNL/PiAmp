@@ -50,3 +50,11 @@ zones:
 
     with pytest.raises(ValueError, match="duplicate"):
         load_config(invalid_path)
+
+
+@pytest.mark.parametrize("threshold", [".nan", ".inf", "true", "1"])
+def test_load_config_rejects_invalid_silence_threshold(tmp_path, threshold):
+    path = tmp_path / "config.yaml"
+    path.write_text(f"silence_threshold_db: {threshold}\n")
+    with pytest.raises(ValueError, match="silence_threshold_db"):
+        load_config(path)

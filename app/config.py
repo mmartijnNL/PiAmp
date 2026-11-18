@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import math
 from typing import Iterable
 
 import yaml
@@ -26,6 +27,9 @@ def load_config(path: str | Path) -> SystemConfig:
         raise FileNotFoundError(f"config file not found: {config_path}")
 
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    threshold = raw.get("silence_threshold_db", -50.0)
+    if isinstance(threshold, bool) or not math.isfinite(float(threshold)) or float(threshold) > 0:
+        raise ValueError("silence_threshold_db must be a finite number at or below 0 dBFS")
 
     input_defs = raw.get("inputs", [])
     zone_defs = raw.get("zones", [])
@@ -59,4 +63,5 @@ def load_config(path: str | Path) -> SystemConfig:
         inputs=parsed_inputs,
         zones=parsed_zones,
         routes=(),
+        silence_threshold_db=float(threshold),
     )

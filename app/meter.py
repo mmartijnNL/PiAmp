@@ -19,7 +19,7 @@ from .models import SystemConfig
 BYTES_PER_SAMPLE = 4  # pw-record --format f32
 MIN_LEVEL_DB = -60.0
 MAX_LEVEL_DB = 0.0
-BAR_WIDTH = 50
+BAR_WIDTH = 13
 CPU_TEMP_PATH = Path("/sys/class/thermal/thermal_zone0/temp")
 
 
@@ -312,6 +312,8 @@ class TerminalMeter:
         for entry in self.entries:
             if entry.side != side:
                 continue
+            if column:
+                column.append("")
             column.append(entry.label)
             if not entry.indices:
                 column.append("(no channels configured)")
@@ -322,13 +324,13 @@ class TerminalMeter:
                     column.append(f"{bar_label} Waiting for audio...")
                     continue
                 if channel_index >= len(values):
-                    column.append(f"{bar_label}    -- dB |{'':<{bar_width}}|")
+                    column.append(f"{bar_label}  -- dB |{'':<{bar_width}}|")
                     continue
                 level = float(values[channel_index])
-                column.append(f"{bar_label} {level:6.0f} dB |{render_bar(level, bar_width):<{bar_width}}|")
+                column.append(f"{bar_label} {level:4.0f} dB |{render_bar(level, bar_width):<{bar_width}}|")
         return column
 
-    def render_lines(self, bar_width: int = 20) -> list[str]:
+    def render_lines(self, bar_width: int = BAR_WIDTH) -> list[str]:
         """Lay the input column and zone column side by side, followed by a
         fixed-size status block, so the frame stays short enough to fit the
         terminal and be redrawn in place without growing over time."""

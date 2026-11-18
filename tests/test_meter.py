@@ -148,10 +148,12 @@ class ResolveStreamsTests(unittest.TestCase):
         meter = TerminalMeter(streams=resolved, entries=entries)
         meter.levels[spec.name] = levels_queue.get_nowait()
         lines = meter._render_entry_column("input", 20)
-        self.assertIn("L      0 dB |", lines[4])
-        self.assertIn("R    -18 dB |", lines[5])
-        self.assertIn("L     -6 dB |", lines[7])
-        self.assertIn("R    -12 dB |", lines[8])
+        self.assertEqual(lines[3], "")
+        self.assertIn("L    0 dB |", lines[5])
+        self.assertIn("R  -18 dB |", lines[6])
+        self.assertEqual(lines[7], "")
+        self.assertIn("L   -6 dB |", lines[9])
+        self.assertIn("R  -12 dB |", lines[10])
 
     def test_rejects_missing_devices_and_unavailable_channels(self):
         spec = StreamSpec("input", "Test", 6)
@@ -168,12 +170,12 @@ class ResolveStreamsTests(unittest.TestCase):
 class RenderBarTests(unittest.TestCase):
     def test_clamps_to_width_bounds(self):
         self.assertEqual(render_bar(-60.0), "")
-        self.assertEqual(render_bar(0.0), "#" * 50)
+        self.assertEqual(render_bar(0.0, width=10), "#" * 10)
         self.assertEqual(render_bar(-120.0), "")
-        self.assertEqual(render_bar(60.0), "#" * 50)
+        self.assertEqual(render_bar(60.0, width=10), "#" * 10)
 
     def test_scales_within_range(self):
-        self.assertEqual(render_bar(-30.0), "#" * 25)
+        self.assertEqual(render_bar(-30.0, width=10), "#" * 5)
 
 
 class StreamReaderTests(unittest.TestCase):
@@ -209,11 +211,12 @@ class TerminalMeterTests(unittest.TestCase):
         meter = TerminalMeter(streams=[spec], entries=[entry])
         meter.levels["TEST"] = np.array([-12.3, -12.7, 0.0])
 
-        lines = meter.render_lines()
+        lines = meter.render_lines(bar_width=10)
 
         self.assertEqual(lines[0], "Pi")
-        self.assertIn(f"L {-12:6.0f} dB |", lines[1])
-        self.assertIn(f"R {-13:6.0f} dB |", lines[2])
+        self.assertIn(f"L {-12:4.0f} dB |", lines[1])
+        self.assertIn(f"R {-13:4.0f} dB |", lines[2])
+        self.assertEqual(len(lines[1].split("|")[1]), 10)
         self.assertFalse(any("." in line for line in lines[:3]))
 
     def test_render_lines_only_shows_configured_channels_inputs_left_zones_right(self):
@@ -233,8 +236,8 @@ class TerminalMeterTests(unittest.TestCase):
 
         joined = "\n".join(meter.render_lines())
         for level in (-10, -20, -30, -40):
-            self.assertIn(f"{level:6.0f} dB", joined)
-        self.assertNotIn(f"{-60:6.0f} dB", joined)
+            self.assertIn(f"{level:4.0f} dB", joined)
+        self.assertNotIn(f"{-60:4.0f} dB", joined)
 
     def test_status_block_stays_fixed_size_regardless_of_message_history(self):
         with tempfile.TemporaryDirectory() as directory:

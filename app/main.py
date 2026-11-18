@@ -12,6 +12,7 @@ from .api import AudioAPI
 from .config import load_config
 from .meter import TerminalMeter
 from .pipewire import PipeWireAdapter
+from .player import PlayerManager
 from .router import RouteManager
 
 
@@ -31,6 +32,13 @@ class PiAmpService:
         self.api: AudioAPI | None = None
         self.messages: deque[str] = deque(maxlen=6)
         self.meter_active = False
+        self.players = PlayerManager(self._node_exists)
+
+    @staticmethod
+    def _node_exists(node_name: str) -> bool:
+        nodes, _links = PipeWireAdapter._parse_pw_dump(PipeWireAdapter._default_runner(["pw-dump"]))
+        wanted = PipeWireAdapter._normalize_device_name(node_name)
+        return any(PipeWireAdapter._normalize_device_name(n["name"]) == wanted for n in nodes.values())
 
     def log(self, message: str) -> None:
         self.messages.append(message)
@@ -49,6 +57,7 @@ class PiAmpService:
             if not validation["ok"]:
                 raise ValueError("configured audio devices are unavailable: " + ", ".join(validation["missing_devices"]))
             manager = RouteManager(config, state_path=self.state_path, persist_state=False, strict_state=True)
+            self.players.sync(config)
             adapter.apply_routes(manager.state, dry_run=True)
             retired_zones = {}
             if self.api is not None:
@@ -126,6 +135,7 @@ def main() -> None:
         pass
     finally:
         stop_event.set()
+        service.players.stop_all()
     print("PiAmp stopped.", flush=True)
 
 

@@ -7,6 +7,9 @@ inputs:
     source:
       device: "UMC1820 Pro"
       channels: [2, 3]
+  - name: "Jazz"
+    source:
+      folder: "/var/mnt/NAS/Music/Jazz"
 
 zones:
   - name: "Bureau Martijn"

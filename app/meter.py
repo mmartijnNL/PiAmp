@@ -14,7 +14,7 @@ from typing import Any, BinaryIO, Callable, Iterable, Sequence
 
 import numpy as np
 
-from .models import SystemConfig
+from .models import SystemConfig, input_channels, input_device
 
 BYTES_PER_SAMPLE = 4  # pw-record --format f32
 MIN_LEVEL_DB = -60.0
@@ -63,15 +63,8 @@ def _normalize_device_name(name: str) -> str:
     return re.sub(r"\s+", " ", name or "").strip().lower()
 
 
-def _source_device(source: str | dict[str, Any]) -> str:
-    source_cfg = source if isinstance(source, dict) else {"device": source}
-    return str(source_cfg.get("device", source or "unknown-source"))
-
-
-def _source_channels(source: str | dict[str, Any], fallback: list[Any]) -> list[int]:
-    source_cfg = source if isinstance(source, dict) else {}
-    raw_channels = source_cfg.get("channels", fallback) or []
-    return [int(value) for value in raw_channels]
+def _source_channels(input_def: Any) -> list[int]:
+    return [int(value) for value in input_channels(input_def)]
 
 
 def plan_streams(
@@ -107,8 +100,8 @@ def plan_streams(
         return key
 
     for input_def in config.inputs:
-        device_name = _source_device(input_def.source)
-        channels = _source_channels(input_def.source, list(input_def.channels))
+        device_name = input_device(input_def)
+        channels = _source_channels(input_def)
         normalized = _normalize_device_name(device_name)
         is_sink_capture = normalized in sinks and normalized not in sources
         key = register(device_name, channels, is_sink_capture)
@@ -143,14 +136,16 @@ def resolve_streams(streams: Sequence[StreamSpec], output: str) -> list[StreamSp
         obj["info"]["props"]
         for obj in json.loads(output)
         if obj.get("type") == "PipeWire:Interface:Node"
-        and (obj.get("info") or {}).get("props", {}).get("media.class") in {"Audio/Source", "Audio/Sink"}
+        and (obj.get("info") or {}).get("props", {}).get("media.class") in {"Audio/Source", "Audio/Sink", "Stream/Output/Audio"}
     ]
     resolved: list[StreamSpec] = []
     for spec in streams:
         media_class = "Audio/Sink" if spec.properties else "Audio/Source"
+        # Folder inputs are PiAmp's own playback streams, captured like sources.
+        allowed_classes = {media_class} | ({"Stream/Output/Audio"} if media_class == "Audio/Source" else set())
         candidates = [
             node for node in nodes
-            if node["media.class"] == media_class
+            if node["media.class"] in allowed_classes
             and _normalize_device_name(spec.target) in {
                 _normalize_device_name(str(node.get("node.name", ""))),
                 _normalize_device_name(str(node.get("node.description", ""))),
@@ -164,7 +159,9 @@ def resolve_streams(streams: Sequence[StreamSpec], output: str) -> list[StreamSp
         if isinstance(positions, str):
             positions = positions.strip("[]").replace(",", " ").split()
         channel_map = tuple(positions)
-        if not channel_map or len(channel_map) != int(node.get("audio.channels", 0)):
+        if not channel_map and node["media.class"] == "Stream/Output/Audio":
+            channel_map = ("FL", "FR")
+        if not channel_map or (node["media.class"] != "Stream/Output/Audio" and len(channel_map) != int(node.get("audio.channels", 0))):
             raise ValueError(f"missing native channel map for meter device: {spec.target}")
         if spec.channels > len(channel_map):
             raise ValueError(f"unavailable configured channel for meter device: {spec.target}")

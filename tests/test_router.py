@@ -378,3 +378,12 @@ def test_route_manager_persists_runtime_state(tmp_path):
     assert state_path.read_text(encoding="utf-8")
     reloaded = RouteManager(state_path=state_path)
     assert reloaded.state["lounge"]["tv"] == -2.0
+
+
+def test_folder_input_uses_player_stream_node_and_default_stereo_channels(tmp_path):
+    from app.models import InputDefinition, input_channels, input_device, input_folder
+
+    folder_input = InputDefinition(name="Music", source={"folder": str(tmp_path)})
+    assert input_folder(folder_input) == str(tmp_path)
+    assert input_device(folder_input) == "piamp-music"
+    assert input_channels(folder_input) == [0, 1]

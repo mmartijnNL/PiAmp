@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from .models import SystemConfig
+from .models import SystemConfig, input_channels, input_device, input_folder
 
 
 class PipeWireAdapter:
@@ -131,7 +132,7 @@ class PipeWireAdapter:
                 continue
             props = ((obj.get("info") or {}).get("props")) or {}
             media_class = props.get("media.class")
-            if media_class not in {"Audio/Sink", "Audio/Source"}:
+            if media_class not in {"Audio/Sink", "Audio/Source", "Stream/Output/Audio"}:
                 continue
             nodes[obj["id"]] = {
                 "node_id": obj["id"],
@@ -222,12 +223,11 @@ class PipeWireAdapter:
         resolved: dict[str, dict[str, Any]] = {}
 
         for input_def in self.config.inputs:
-            source_cfg = input_def.source if isinstance(input_def.source, dict) else {"device": input_def.source}
-            device_name = str(source_cfg.get("device", input_def.source or "unknown-source"))
+            device_name = input_device(input_def)
             normalized = self._normalize_device_name(device_name)
             resolved[input_def.name] = {
                 "device": live_lookup.get(normalized, device_name),
-                "channels": list(source_cfg.get("channels", getattr(input_def, "channels", []))),
+                "channels": input_channels(input_def),
             }
 
         for zone in self.config.zones:
@@ -254,8 +254,11 @@ class PipeWireAdapter:
         missing: list[str] = []
 
         for input_def in self.config.inputs:
-            source_cfg = input_def.source if isinstance(input_def.source, dict) else {"device": input_def.source}
-            device_name = str(source_cfg.get("device", input_def.source or "unknown-source"))
+            if input_folder(input_def) is not None:
+                if not Path(input_folder(input_def)).expanduser().is_dir():
+                    missing.append(input_folder(input_def))
+                continue
+            device_name = input_device(input_def)
             if self._normalize_device_name(device_name) not in live_lookup:
                 missing.append(device_name)
 
@@ -306,16 +309,15 @@ class PipeWireAdapter:
                 if input_def is None:
                     continue
 
-                source_cfg = input_def.source if isinstance(input_def.source, dict) else {"device": input_def.source}
-                source_name = str(source_cfg.get("device", input_def.source or "unknown-source"))
+                source_name = input_device(input_def)
                 source_node = resolve_node(source_name, "Audio/Source")
                 if source_node is None:
                     raise ValueError(f"input device not found in PipeWire: {source_name}")
 
-                input_channels = list(source_cfg.get("channels", getattr(input_def, "channels", None)) or [0, 1])
+                in_channels = input_channels(input_def) or [0, 1]
 
                 link_pairs: list[tuple[int, int]] = []
-                for in_channel, out_channel in zip(input_channels, zone_channels):
+                for in_channel, out_channel in zip(in_channels, zone_channels):
                     src_port = source_node["ports"]["out"].get(int(in_channel))
                     dst_port = zone_node["ports"]["in"].get(int(out_channel))
                     if src_port is None or dst_port is None:

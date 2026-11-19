@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 class LauncherTests(unittest.TestCase):
-    def run_launcher(self, display, session_type, xset_status=0):
+    def run_launcher(self, display, session_type, xset_status=0, autostart=False):
         with tempfile.TemporaryDirectory() as directory:
             bin_dir = Path(directory)
             xset = bin_dir / "xset"
@@ -24,8 +24,11 @@ class LauncherTests(unittest.TestCase):
                 "DISPLAY": display,
                 "XDG_SESSION_TYPE": session_type,
             }
+            command = ["/usr/bin/bash", str(Path(__file__).resolve().parents[1] / "start_manual.sh")]
+            if autostart:
+                command.append("--autostart")
             return subprocess.run(
-                ["/usr/bin/bash", str(Path(__file__).resolve().parents[1] / "start_manual.sh")],
+                command,
                 env=env, capture_output=True, text=True, timeout=5,
             )
 
@@ -48,6 +51,22 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("WARNING: Could not disable display blanking/power saving.", result.stderr)
         self.assertIn("terminal launched", result.stdout)
+
+    def test_autostart_skips_virtual_and_missing_displays(self):
+        for display in (":1", ":1.0", ":10", "", "localhost:10.0"):
+            with self.subTest(display=display):
+                result = self.run_launcher(display, "x11", autostart=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("Skipping PiAmp autostart", result.stdout)
+                self.assertNotIn("terminal launched", result.stdout)
+                self.assertNotIn("xset:", result.stdout)
+
+    def test_autostart_runs_on_small_screen(self):
+        for display in (":0", ":0.0", "unix:0", "unix:0.0"):
+            with self.subTest(display=display):
+                result = self.run_launcher(display, "x11", autostart=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("terminal launched", result.stdout)
 
 
 if __name__ == "__main__":

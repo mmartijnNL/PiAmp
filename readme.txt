@@ -78,6 +78,14 @@ even while audio detection is unavailable. Automatic updates do not rewrite file
 
 Desktop autostart
 install_service.sh installs a desktop autostart entry, not a headless service.
+Run sudo ./install_service.sh from the checkout you want to use.
+Startup runs directly from that checkout, not a snapshot in /opt/piamp, so
+subsequent updates there are used on the next launch without reinstalling.
+Keep the checkout at the same path, or rerun the installer after moving it.
+Autostart uses start_manual.sh --autostart and only runs on the small screen
+(X11 display :0). Separate virtual VNC desktops such as :1 skip it; VNC
+mirroring :0 still shows the same single app. Manual launches remain allowed
+on any display.
 It takes effect on the next desktop login. Bare Openbox sessions also require
 PyXDG to process desktop autostart entries. If openbox-xdg-autostart reports
 "requires PyXDG to be installed", run: sudo apt install python3-xdg

@@ -6,7 +6,7 @@ set -euo pipefail
 # a system-level service starting at multi-user.target has no reliable access
 # to the X session and can never show a terminal window on boot.
 SERVICE_NAME="piamp"                  # legacy unit name, only used to clean up old installs
-APP_DIR="/opt/piamp"
+APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 AUTOSTART_NAME="piamp.desktop"
 
@@ -14,11 +14,6 @@ if [[ $EUID -ne 0 ]]; then
   echo "This installer must be run as root."
   echo "Try: sudo ./install_service.sh"
   exit 1
-fi
-
-if [[ ! -d "$APP_DIR" ]]; then
-  echo "Installing PiAmp into $APP_DIR"
-  mkdir -p "$APP_DIR"
 fi
 
 # PipeWire and the terminal UI run in the desktop user's session.
@@ -29,10 +24,7 @@ if [[ -z "$RUN_HOME" || ! -d "$RUN_HOME" ]]; then
   exit 1
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-rsync -a --delete "$SCRIPT_DIR/" "$APP_DIR/"
 chmod +x "$APP_DIR/start_manual.sh"
-chown -R "$RUN_USER:$RUN_USER" "$APP_DIR"
 
 # Remove any previous headless systemd service; it would otherwise start a
 # second PiAmp process that fights the autostarted terminal over PipeWire.
@@ -44,14 +36,14 @@ fi
 rm -f "$SERVICE_FILE"
 systemctl daemon-reload
 
-# Autostart PiAmp in a maximized terminal as soon as the desktop session starts.
+# Use the live checkout; the launcher skips virtual VNC desktops.
 AUTOSTART_DIR="$RUN_HOME/.config/autostart"
 mkdir -p "$AUTOSTART_DIR"
 cat > "$AUTOSTART_DIR/$AUTOSTART_NAME" <<EOF
 [Desktop Entry]
 Type=Application
 Name=PiAmp
-Exec=$APP_DIR/start_manual.sh
+Exec="$APP_DIR/start_manual.sh" --autostart
 X-GNOME-Autostart-enabled=true
 EOF
 chown -R "$RUN_USER:$RUN_USER" "$AUTOSTART_DIR"
@@ -80,7 +72,7 @@ fi
 loginctl enable-linger "$RUN_USER"
 
 echo
-echo "Installed PiAmp into $APP_DIR"
+echo "PiAmp will run directly from $APP_DIR (no separate installed copy)."
 echo "Autostart entry: $AUTOSTART_DIR/$AUTOSTART_NAME"
-echo "PiAmp will open in a maximized terminal the next time $RUN_USER's desktop starts (e.g. after a reboot)."
+echo "PiAmp will open in a maximized terminal only on the small screen (:0) at desktop login."
 echo "To start it immediately without rebooting: sudo -u $RUN_USER DISPLAY=:0 $APP_DIR/start_manual.sh"

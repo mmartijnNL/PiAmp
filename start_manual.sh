@@ -1,6 +1,16 @@
 #!/usr/bin/bash
 set -euo pipefail
 
+if [[ "${1:-}" == "--autostart" ]]; then
+  case "${DISPLAY:-}" in
+    :0|:0.0|unix:0|unix:0.0) ;;
+    *)
+      echo "Skipping PiAmp autostart on display '${DISPLAY:-unset}'; the small screen is :0."
+      exit 0
+      ;;
+  esac
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CMD="cd \"$SCRIPT_DIR\" && /usr/bin/python3 -m app.main --config config/config.yaml --routes config/routes.yaml"
 PAUSE_CMD="echo; echo 'Press Enter to close this window...'; read -r -p ''"

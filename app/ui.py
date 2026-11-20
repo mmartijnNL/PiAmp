@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterable, Sequence
 
@@ -50,8 +51,7 @@ class StreamSpec:
 
 @dataclass(frozen=True)
 class MeterEntry:
-    """One configured input or zone, shown as a device name plus one bar per
-    configured channel (left/right), fed from a capture `StreamSpec`."""
+    """One configured input or zone, metered at its loudest configured channel."""
 
     label: str
     side: str  # "input" or "zone"
@@ -176,16 +176,6 @@ def resolve_streams(streams: Sequence[StreamSpec], output: str) -> list[StreamSp
     return resolved
 
 
-def _bar_labels(count: int) -> list[str]:
-    if count <= 0:
-        return []
-    if count == 1:
-        return ["M"]
-    labels = ["L", "R"]
-    labels.extend(str(n) for n in range(3, count + 1))
-    return labels[:count]
-
-
 def read_cpu_temp_celsius(path: Path = CPU_TEMP_PATH) -> float | None:
     """Read the SoC temperature from sysfs, in degrees Celsius."""
     try:
@@ -250,9 +240,9 @@ class TerminalUI:
     """Live per-input/per-zone level meter rendered to the terminal.
 
     Configured inputs are shown in a left column and configured zones in a
-    right column, each as a device name followed by one bar per configured
-    channel (L/R). A fixed-size status block (never growing) follows with
-    the CPU temperature and whatever `footer` reports."""
+    right column, each as a device name and peak dB value followed by one
+    combined bar. A status block follows with the local time, CPU temperature,
+    and whatever `footer` reports."""
 
     def __init__(
         self,
@@ -311,20 +301,21 @@ class TerminalUI:
                 continue
             if column:
                 column.append("")
-            column.append(entry.label)
             if not entry.indices:
-                column.append("(no channels configured)")
+                column.extend([f"  --  {entry.label}", "(no channels configured)"])
                 continue
             values = self.levels.get(entry.stream_name)
-            for bar_label, channel_index in zip(_bar_labels(len(entry.indices)), entry.indices):
-                if values is None:
-                    column.append(f"{bar_label} Waiting for audio...")
-                    continue
-                if channel_index >= len(values):
-                    column.append(f"{bar_label}  -- dB |{'':<{bar_width}}|")
-                    continue
-                level = float(values[channel_index])
-                column.append(f"{bar_label} {level:4.0f} dB |{render_bar(level, bar_width):<{bar_width}}|")
+            if values is None:
+                column.extend([f"  --  {entry.label}", "Waiting for audio..."])
+                continue
+            if any(channel_index >= len(values) for channel_index in entry.indices):
+                column.extend([f"  --  {entry.label}", " " * bar_width])
+                continue
+            level = max(float(values[channel_index]) for channel_index in entry.indices)
+            column.extend([
+                f"{level:4.0f}  {entry.label}",
+                render_bar(level, bar_width).ljust(bar_width),
+            ])
         return column
 
     def render_lines(self, bar_width: int = BAR_WIDTH) -> list[str]:
@@ -341,8 +332,9 @@ class TerminalUI:
             lines.append("   ".join(cells).rstrip())
 
         lines.append("")
+        lines.append("")
         cpu_temp = read_cpu_temp_celsius(self.cpu_temp_path)
-        lines.append(f"CPU temp: {cpu_temp:.1f}\u00b0C" if cpu_temp is not None else "CPU temp: unavailable")
+        lines.append(f" {datetime.now():%H:%M}              {cpu_temp:.1f}\u00b0C" if cpu_temp is not None else "CPU temp: unavailable")
         if self.footer is not None:
             lines.extend(self.footer())
         return lines

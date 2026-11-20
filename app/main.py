@@ -160,8 +160,7 @@ class PiAmpService:
             return False
 
     def _status_lines(self) -> list[str]:
-        route_count = sum(len(routes) for routes in self.api.route_manager.state.values()) if self.api else 0
-        return [f"Routes active: {route_count}", *list(self.active_errors.values())]
+        return list(self.active_errors.values())
 
     def start_ui(self, stop_event: Event) -> None:
         def ready() -> None:

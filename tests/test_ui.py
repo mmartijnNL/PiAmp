@@ -4,8 +4,9 @@ import queue
 import tempfile
 import threading
 import unittest
+from datetime import datetime
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -148,12 +149,11 @@ class ResolveStreamsTests(unittest.TestCase):
         meter = TerminalUI(streams=resolved, entries=entries)
         meter.levels[spec.name] = levels_queue.get_nowait()
         lines = meter._render_entry_column("input", 20)
-        self.assertEqual(lines[3], "")
-        self.assertIn("L    0 dB |", lines[5])
-        self.assertIn("R  -18 dB |", lines[6])
-        self.assertEqual(lines[7], "")
-        self.assertIn("L   -6 dB |", lines[9])
-        self.assertIn("R  -12 dB |", lines[10])
+        self.assertEqual(lines[3], "   0 dB  GameCube")
+        self.assertEqual(lines[4], "#" * 20)
+        self.assertEqual(lines[5], "")
+        self.assertEqual(lines[6], "  -6 dB  TV")
+        self.assertEqual(lines[7], "#" * 17 + " " * 3)
 
     def test_rejects_missing_devices_and_unavailable_channels(self):
         spec = StreamSpec("input", "Test", 6)
@@ -213,11 +213,10 @@ class TerminalUITests(unittest.TestCase):
 
         lines = meter.render_lines(bar_width=10)
 
-        self.assertEqual(lines[0], "Pi")
-        self.assertIn(f"L {-12:4.0f} dB |", lines[1])
-        self.assertIn(f"R {-13:4.0f} dB |", lines[2])
-        self.assertEqual(len(lines[1].split("|")[1]), 10)
-        self.assertFalse(any("." in line for line in lines[:3]))
+        self.assertEqual(lines[0], " -12 dB  Pi")
+        self.assertEqual(lines[1], render_bar(-12.3, 10))
+        self.assertEqual(lines[2], "")
+        self.assertFalse(any("." in line or "|" in line for line in lines[:3]))
 
     def test_render_lines_only_shows_configured_channels_inputs_left_zones_right(self):
         spec = StreamSpec(name="S", target="dummy", channels=6)
@@ -229,15 +228,58 @@ class TerminalUITests(unittest.TestCase):
         meter.levels["S"] = np.array([-60.0, -60.0, -10.0, -20.0, -30.0, -40.0])
 
         header_line = meter.render_lines()[0]
-        self.assertEqual(header_line.split("   ")[0], "TV")
-        self.assertTrue(header_line.endswith("Bureau Martijn"))
-        self.assertNotIn("-", header_line)
+        self.assertTrue(header_line.startswith(" -10 dB  TV"))
+        self.assertTrue(header_line.endswith(" -30 dB  Bureau Martijn"))
         self.assertLess(header_line.index("TV"), header_line.index("Bureau Martijn"))
 
         joined = "\n".join(meter.render_lines())
-        for level in (-10, -20, -30, -40):
-            self.assertIn(f"{level:4.0f} dB", joined)
-        self.assertNotIn(f"{-60:4.0f} dB", joined)
+        self.assertIn("-10 dB", joined)
+        self.assertIn("-30 dB", joined)
+        for level in (-20, -40, -60):
+            self.assertNotIn(f"{level} dB", joined)
+        self.assertNotIn("|", joined)
+
+    def test_combined_meter_handles_mono_waiting_and_unavailable_channels(self):
+        spec = StreamSpec(name="S", target="dummy", channels=2)
+        entry = MeterEntry(label="Mono", side="input", stream_name="S", indices=(1,))
+        meter = TerminalUI(streams=[spec], entries=[entry])
+        self.assertEqual(meter._render_entry_column("input", 10),
+                         ["  -- dB  Mono", "Waiting for audio..."])
+        meter.levels["S"] = np.array([0.0, -30.0])
+        self.assertEqual(meter._render_entry_column("input", 10),
+                         [" -30 dB  Mono", "#####     "])
+        meter.entries = [MeterEntry("Missing", "input", "S", (1, 2))]
+        self.assertEqual(meter._render_entry_column("input", 10),
+                         ["  -- dB  Missing", "          "])
+        meter.entries = [MeterEntry("Empty", "input", "S", ())]
+        self.assertEqual(meter._render_entry_column("input", 10),
+                         ["  -- dB  Empty", "(no channels configured)"])
+
+    def test_device_names_stay_aligned_as_level_width_changes(self):
+        spec = StreamSpec(name="S", target="dummy", channels=2)
+        entries = [
+            MeterEntry("TV", "input", "S", (0,)),
+            MeterEntry("Office", "zone", "S", (1,)),
+        ]
+        meter = TerminalUI(streams=[spec], entries=entries)
+        positions = []
+        for level in (-160, -100, -99, -1, 0, 1, 20):
+            with self.subTest(level=level):
+                meter.levels["S"] = np.array([level, level])
+                header = meter.render_lines()[0]
+                self.assertTrue(header.startswith(f"{level:4.0f} dB  TV"))
+                positions.append((header.index("TV"), header.index("Office")))
+        self.assertEqual(set(positions), {(9, 25)})
+
+    def test_status_clock_updates_each_frame_in_local_time(self):
+        meter = TerminalUI(streams=[], entries=[])
+        with patch("app.ui.datetime") as clock:
+            clock.now.side_effect = [
+                datetime(2026, 11, 19, 22, 32, 47),
+                datetime(2026, 11, 19, 22, 32, 48),
+            ]
+            self.assertIn("Time: 22:32:47", meter.render_lines())
+            self.assertIn("Time: 22:32:48", meter.render_lines())
 
     def test_status_block_shows_active_errors_and_clears_resolved_errors(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -245,7 +287,7 @@ class TerminalUITests(unittest.TestCase):
             temp_path.write_text("42000")
             errors = ["ERROR: routes unavailable"]
             meter = TerminalUI(
-                streams=[], entries=[], footer=lambda: ["Routes active: 2", *errors], cpu_temp_path=temp_path
+                streams=[], entries=[], footer=lambda: list(errors), cpu_temp_path=temp_path
             )
 
             first_render = meter.render_lines()
@@ -255,7 +297,6 @@ class TerminalUITests(unittest.TestCase):
             self.assertFalse(any("ERROR:" in line or "Last:" in line for line in second_render))
             self.assertTrue(meter.render().endswith("\033[J"))
             self.assertIn("CPU temp: 42.0\u00b0C", first_render)
-            self.assertIn("Routes active: 2", first_render)
 
     def _fake_proc(self, stdout: io.BytesIO) -> Mock:
         proc = Mock()
@@ -285,8 +326,11 @@ class TerminalUITests(unittest.TestCase):
         stop_event.is_set.side_effect = [False, True]
         stop_event.wait.return_value = None
 
-        meter.run(stop_event)
+        with patch("sys.stdout", new_callable=io.StringIO) as output:
+            meter.run(stop_event)
 
+        self.assertTrue(output.getvalue().startswith("\033[?1049h\033[?25l"))
+        self.assertTrue(output.getvalue().endswith("\033[?25h\033[?1049l"))
         self.assertIsNotNone(meter.levels["TEST"])
         np.testing.assert_allclose(meter.levels["TEST"], [0.0, 0.0], atol=1e-5)
 

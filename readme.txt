@@ -100,12 +100,14 @@ Wayland power-saving settings are unchanged. Failures are printed as warnings.
 
 Run python3 -m app.ui (or start app.main without --no-ui) to show live
 dBFS levels for every configured input (left column) and zone (right
-column), refreshed in place in the terminal. Each entry shows its device
-name without decorative dashes, followed by one bar per configured channel
-(L/R); channels not listed
-in config/config.yaml are never shown. Numeric levels are rounded to whole dBFS,
-without decimals. A fixed-size status block below the columns always shows
-the CPU temperature, active route count, and any currently active errors.
+column), refreshed in place in the terminal. Each entry shows its level in
+a four-character whole-dBFS field, then "dB", two spaces, and the device
+name, keeping names aligned as levels change, with one combined bar on the next
+row, without channel labels or bar borders. The level is the maximum across
+that entry's configured channels; channels not listed in config/config.yaml
+are excluded. A status block below the columns shows the local time (HH:MM:SS),
+CPU temperature, and any currently active errors, without an active route count.
+The cursor is hidden while the UI runs and restored on exit.
 Errors disappear after the failing operation succeeds; no last-event history
 is shown in the UI. --no-meter remains an alias for --no-ui.
 Capture uses exact PipeWire node names and native channel maps, without

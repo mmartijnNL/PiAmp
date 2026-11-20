@@ -1,4 +1,4 @@
-Bureau Martijn:
+Bureau Tijn:
   AND:
     TV: 0.0
     GameCube: 0.0
@@ -9,5 +9,5 @@ WC:
       GameCube: 0.0
     Jazz:
       Gain: -40.0
-      StartTime: "10:00"
-      EndTime: "22:00"
+      StartTime: "09:00"
+      EndTime: "23:00"

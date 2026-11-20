@@ -23,7 +23,7 @@ class ServiceTests(unittest.TestCase):
                 adapter.apply_routes.return_value = {"applied": []}
                 service = PiAmpService(str(config_path), str(state_path))
                 self.assertTrue(service.check_for_changes())
-                self.assertEqual(service._status_lines(), ["Routes active: 1"])
+                self.assertEqual(service._status_lines(), [])
                 self.assertEqual(state_path.read_text(), "Office:\n  Aux: 0\n")
                 self.assertFalse(service.check_for_changes())
                 self.assertEqual(adapter.apply_routes.call_count, 2)
